@@ -130,12 +130,13 @@
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
         const fieldNames = fields.map(f => f.name);
 
-        // Match field names that END with the keyword to avoid partial collisions
-        // e.g. 'talent_role_id' must not match 'parent_talent_role_id'
+        // Match field names using dot-separator only (Looker fields are "view.field_name")
+        // e.g. 'talent_role_id' matches 'talent_target.talent_role_id'
+        //      but NOT 'talent_target.parent_talent_role_id'
         const pick = (row, keyword) => {
           const key = fieldNames.find(f => {
             const lower = f.toLowerCase();
-            return lower === keyword || lower.endsWith('.' + keyword) || lower.endsWith('_' + keyword);
+            return lower === keyword || lower.endsWith('.' + keyword);
           });
           if (!key) return undefined;
           const cell = row[key];
@@ -154,7 +155,7 @@
 
         const nodes = data.map(row => ({
           talent_role_id:          String(pick(row, 'talent_role_id') ?? ''),
-          parent_talent_role_id:   pick(row, 'parent_talent_role_id') != null ? String(pick(row, 'parent_talent_role_id')) : null,
+          parent_talent_role_id:   (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'parent_talent_role_id')),
           employee_name:           pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:        pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name: pick(row, 'parent_talent_role_name') ?? null,
@@ -196,7 +197,8 @@
             .id(d => d.talent_role_id)
             .parentId(d => d.parent_talent_role_id)(nodes);
         } catch (e) {
-          element.insertAdjacentHTML('beforeend', `<p style="padding:16px;color:red;">Tree error: ${e.message}</p>`);
+          this._chart.innerHTML = `<p style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:red;font-size:13px;text-align:center;z-index:99;">Tree error: ${e.message}<br><br>Check browser console (F12) for details.</p>`;
+          console.error('[talent-org-chart] stratify error:', e);
           done();
           return;
         }
