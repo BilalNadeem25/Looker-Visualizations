@@ -130,21 +130,36 @@
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
         const fieldNames = fields.map(f => f.name);
 
+        // Match field names that END with the keyword to avoid partial collisions
+        // e.g. 'talent_role_id' must not match 'parent_talent_role_id'
         const pick = (row, keyword) => {
-          const key  = fieldNames.find(f => f.toLowerCase().includes(keyword));
+          const key = fieldNames.find(f => {
+            const lower = f.toLowerCase();
+            return lower === keyword || lower.endsWith('.' + keyword) || lower.endsWith('_' + keyword);
+          });
           if (!key) return undefined;
           const cell = row[key];
           return cell && typeof cell === 'object' && 'value' in cell ? cell.value : cell;
         };
 
+        // Normalise bench_strength — handles numeric (1/2/3) or string values
+        const normBench = v => {
+          if (v === null || v === undefined) return 'N/A';
+          const s = String(v).toLowerCase().trim();
+          if (s === 'high'   || s === '3') return 'High';
+          if (s === 'medium' || s === '2') return 'Medium';
+          if (s === 'low'    || s === '1') return 'Low';
+          return 'N/A';
+        };
+
         const nodes = data.map(row => ({
-          talent_role_id:          String(pick(row, 'talent_role_id') ?? pick(row, 'role_id') ?? ''),
+          talent_role_id:          String(pick(row, 'talent_role_id') ?? ''),
           parent_talent_role_id:   pick(row, 'parent_talent_role_id') != null ? String(pick(row, 'parent_talent_role_id')) : null,
           employee_name:           pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:        pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name: pick(row, 'parent_talent_role_name') ?? null,
           client_name:             pick(row, 'client_name') ?? '—',
-          bench_strength:          pick(row, 'bench_strength') ?? 'N/A',
+          bench_strength:          normBench(pick(row, 'bench_strength')),
           role_fit_score:          pick(row, 'role_fit_score'),
           org_health_index:        pick(row, 'org_health_index') ?? 'N/A'
         }));
