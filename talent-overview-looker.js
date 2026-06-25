@@ -125,6 +125,7 @@
       },
 
       updateAsync(data, element, config, queryResponse, details, done) {
+        console.log('[OrgChart] updateAsync fired, rows:', data.length);
         this._chart.querySelectorAll('svg').forEach(el => el.remove());
 
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
@@ -164,6 +165,11 @@
           role_fit_score:          pick(row, 'role_fit_score'),
           org_health_index:        pick(row, 'org_health_index') ?? 'N/A'
         }));
+
+        console.log('[OrgChart] fieldNames:', fieldNames);
+        console.log('[OrgChart] first raw row:', data[0]);
+        console.log('[OrgChart] first mapped node:', nodes[0]);
+        console.log('[OrgChart] root nodes (null parent):', nodes.filter(n => n.parent_talent_role_id === null));
 
         if (!nodes.length) { done(); return; }
 
