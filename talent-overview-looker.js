@@ -13,7 +13,7 @@
         },
         color_medium: {
           label: 'Medium',
-          default: '#e8c12b',
+          default: '#e2e829',
           type: 'string',
           display: 'color',
           section: 'Colors'
