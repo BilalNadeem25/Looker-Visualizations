@@ -175,7 +175,7 @@
 
         const OHI_COLORS = {
           High:   config.color_high   || '#81e84c',
-          Medium: config.color_medium || '#e8c12b',
+          Medium: config.color_medium || '#e2e829',
           Low:    config.color_low    || '#e74c3c',
           'N/A':  config.color_na     || '#95a5a6'
         };
