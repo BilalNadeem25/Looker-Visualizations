@@ -6,14 +6,14 @@
       options: {
         color_high: {
           label: 'High',
-          default: '#27ae60',
+          default: '#81e84c',
           type: 'string',
           display: 'color',
           section: 'Colors'
         },
         color_medium: {
           label: 'Medium',
-          default: '#e67e22',
+          default: '#e8c12b',
           type: 'string',
           display: 'color',
           section: 'Colors'
@@ -61,18 +61,18 @@
           .to-zoom { position:absolute; top:10px; right:10px; display:flex; flex-direction:column; gap:4px; z-index:10; }
           .to-zoom-btn { width:28px; height:28px; border:1px solid #ddd; background:#fff; border-radius:5px; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
           .to-zoom-btn:hover { background:#f0f0f0; }
-          .to-tooltip { position:fixed; pointer-events:none; background:#fff; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.15); padding:12px 14px; min-width:200px; max-width:240px; font-size:12px; z-index:1000; opacity:0; transition:opacity 0.15s ease; }
+          .to-tooltip { position:fixed; pointer-events:none; background:#262D33; border-radius:4px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:200px; max-width:240px; font-size:12px; font-family:Roboto,'Noto Sans','Noto Sans JP','Noto Sans CJK KR','Noto Sans Arabic UI','Noto Sans Devanagari UI','Noto Sans Hebrew','Noto Sans Thai UI',Helvetica,Arial,sans-serif; z-index:1000; opacity:0; transition:opacity 0.15s ease; color:#fff; }
           .to-tooltip.visible { opacity:1; }
-          .to-tt-header { display:flex; align-items:center; gap:9px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #f0f0f0; }
+          .to-tt-header { display:flex; align-items:center; gap:9px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.12); }
           .to-tt-avatar { width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:bold; flex-shrink:0; }
-          .to-tt-name { font-weight:700; font-size:13px; color:#222; }
-          .to-tt-role { font-size:11px; color:#888; margin-top:1px; }
+          .to-tt-name { font-weight:700; font-size:12px; color:#fff; }
+          .to-tt-role { font-size:12px; color:rgba(255,255,255,0.6); margin-top:1px; }
           .to-tt-row { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:3px 0; }
-          .to-tt-label { color:#aaa; font-size:11px; white-space:nowrap; flex-shrink:0; }
-          .to-tt-value { color:#333; font-size:11px; font-weight:500; text-align:right; word-break:break-word; }
-          .to-tt-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; }
+          .to-tt-label { color:rgba(255,255,255,0.5); font-size:12px; white-space:nowrap; flex-shrink:0; }
+          .to-tt-value { color:#fff; font-size:12px; font-weight:500; text-align:right; word-break:break-word; }
+          .to-tt-badge { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:#fff; }
           .to-tt-dot { width:8px; height:8px; border-radius:50%; }
-          .to-score-wrap { background:#f0f0f0; border-radius:3px; height:5px; overflow:hidden; width:70px; }
+          .to-score-wrap { background:rgba(255,255,255,0.15); border-radius:3px; height:5px; overflow:hidden; width:70px; }
           .to-score-bar { height:100%; border-radius:3px; }
         `;
         element.appendChild(style);
@@ -174,8 +174,8 @@
         if (!nodes.length) { done(); return; }
 
         const OHI_COLORS = {
-          High:   config.color_high   || '#27ae60',
-          Medium: config.color_medium || '#e67e22',
+          High:   config.color_high   || '#81e84c',
+          Medium: config.color_medium || '#e8c12b',
           Low:    config.color_low    || '#e74c3c',
           'N/A':  config.color_na     || '#95a5a6'
         };
@@ -348,7 +348,7 @@
           </div>
           <div class="to-tt-row">
             <span class="to-tt-label">Bench Strength</span>
-            <span class="to-tt-value" style="color:${BENCH_COLORS[bench] || '#333'}">${bench}</span>
+            <span class="to-tt-value" style="color:${BENCH_COLORS[bench] || '#fff'}">${bench}</span>
           </div>
           <div class="to-tt-row">
             <span class="to-tt-label">Reports To</span>
