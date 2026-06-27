@@ -5,21 +5,21 @@
 
       options: {
         color_high: {
-          label: 'High',
+          label: 'High / Low Risk',
           default: '#81e84c',
           type: 'string',
           display: 'color',
           section: 'Colors'
         },
         color_medium: {
-          label: 'Medium',
+          label: 'Medium / Mid Risk',
           default: '#e2e829',
           type: 'string',
           display: 'color',
           section: 'Colors'
         },
         color_low: {
-          label: 'Low',
+          label: 'Low / High Risk',
           default: '#e74c3c',
           type: 'string',
           display: 'color',
@@ -39,7 +39,7 @@
           display: 'select',
           values: [
             { 'Org Health Index': 'org_health' },
-            { 'Bench Strength': 'bench' }
+            { 'Bench Risk': 'bench_risk' }
           ],
           section: 'Colors'
         }
@@ -55,7 +55,7 @@
           .to-toggle span { font-size:11px; color:#888; }
           .to-btn { font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
           .to-btn.active { background:#3498db; color:#fff; border-color:#3498db; }
-          .to-legend { position:absolute; bottom:10px; left:10px; display:flex; gap:12px; background:rgba(255,255,255,0.95); padding:6px 11px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }
+          .to-color-legend { position:absolute; bottom:10px; left:10px; display:flex; gap:12px; background:rgba(255,255,255,0.95); padding:6px 11px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }
           .to-legend-item { display:flex; align-items:center; gap:5px; font-size:11px; color:#555; }
           .to-legend-dot { width:8px; height:8px; border-radius:50%; }
           .to-zoom { position:absolute; top:10px; right:10px; display:flex; flex-direction:column; gap:4px; z-index:10; }
@@ -74,6 +74,15 @@
           .to-tt-dot { width:8px; height:8px; border-radius:50%; }
           .to-score-wrap { background:rgba(255,255,255,0.15); border-radius:3px; height:5px; overflow:hidden; width:70px; }
           .to-score-bar { height:100%; border-radius:3px; }
+          .to-summary { position:absolute; bottom:10px; right:10px; background:rgba(255,255,255,0.95); border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); padding:10px 14px; font-size:11px; color:#444; min-width:200px; z-index:10; }
+          .to-summary-title { font-weight:700; font-size:11px; color:#222; margin-bottom:6px; padding-bottom:5px; border-bottom:1px solid #eee; }
+          .to-summary-row { display:flex; justify-content:space-between; padding:2px 0; gap:16px; }
+          .to-summary-label { color:#888; }
+          .to-summary-value { font-weight:600; color:#222; }
+          .to-summary-section { margin-top:6px; padding-top:5px; border-top:1px solid #eee; }
+          .to-summary-section-title { font-weight:600; color:#555; margin-bottom:3px; }
+          .to-summary-dot-row { display:flex; align-items:center; justify-content:space-between; padding:2px 0; gap:8px; }
+          .to-summary-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
         `;
         element.appendChild(style);
 
@@ -82,14 +91,19 @@
         toggle.innerHTML = `
           <span>Color by:</span>
           <button class="to-btn active" id="to-btn-ohi">Org Health Index</button>
-          <button class="to-btn" id="to-btn-bench">Bench Strength</button>
+          <button class="to-btn" id="to-btn-bench-risk">Bench Risk</button>
         `;
         element.appendChild(toggle);
 
-        const legend = document.createElement('div');
-        legend.className = 'to-legend';
-        legend.id = 'to-legend';
-        element.appendChild(legend);
+        const colorLegend = document.createElement('div');
+        colorLegend.className = 'to-color-legend';
+        colorLegend.id = 'to-color-legend';
+        element.appendChild(colorLegend);
+
+        const summary = document.createElement('div');
+        summary.className = 'to-summary';
+        summary.id = 'to-summary';
+        element.appendChild(summary);
 
         const zoomEl = document.createElement('div');
         zoomEl.className = 'to-zoom';
@@ -125,15 +139,11 @@
       },
 
       updateAsync(data, element, config, queryResponse, details, done) {
-        console.log('[OrgChart] updateAsync fired, rows:', data.length);
         this._chart.querySelectorAll('svg').forEach(el => el.remove());
 
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
         const fieldNames = fields.map(f => f.name);
 
-        // Match field names using dot-separator only (Looker fields are "view.field_name")
-        // e.g. 'talent_role_id' matches 'talent_target.talent_role_id'
-        //      but NOT 'talent_target.parent_talent_role_id'
         const pick = (row, keyword) => {
           const key = fieldNames.find(f => {
             const lower = f.toLowerCase();
@@ -144,7 +154,6 @@
           return cell && typeof cell === 'object' && 'value' in cell ? cell.value : cell;
         };
 
-        // Normalise bench_strength — handles numeric (1/2/3) or string values
         const normBench = v => {
           if (v === null || v === undefined) return 'N/A';
           const s = String(v).toLowerCase().trim();
@@ -155,21 +164,19 @@
         };
 
         const nodes = data.map(row => ({
-          talent_role_id:          String(pick(row, 'talent_role_id') ?? ''),
-          parent_talent_role_id:   (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'parent_talent_role_id')),
-          employee_name:           pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
-          talent_role_name:        pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
-          parent_talent_role_name: pick(row, 'parent_talent_role_name') ?? null,
-          client_name:             pick(row, 'client_name') ?? '—',
-          bench_strength:          normBench(pick(row, 'bench_strength')),
-          role_fit_score:          pick(row, 'role_fit_score'),
-          org_health_index:        pick(row, 'org_health_index') ?? 'N/A'
+          talent_role_id:             String(pick(row, 'talent_role_id') ?? ''),
+          parent_talent_role_id:      (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'parent_talent_role_id')),
+          employee_name:              pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
+          talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
+          parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
+          client_name:                pick(row, 'client_name') ?? '—',
+          bench_strength:             normBench(pick(row, 'bench_strength')),
+          bench_risk:                 pick(row, 'bench_risk') ?? 'N/A',
+          is_mission_critical_position: pick(row, 'is_mission_critical_position'),
+          is_talent:                  pick(row, 'is_talent'),
+          role_fit_score:             pick(row, 'role_fit_score'),
+          org_health_index:           pick(row, 'org_health_index') ?? 'N/A'
         }));
-
-        console.log('[OrgChart] fieldNames:', fieldNames);
-        console.log('[OrgChart] first raw row:', data[0]);
-        console.log('[OrgChart] first mapped node:', nodes[0]);
-        console.log('[OrgChart] root nodes (null parent):', nodes.filter(n => n.parent_talent_role_id === null));
 
         if (!nodes.length) { done(); return; }
 
@@ -179,24 +186,70 @@
           Low:    config.color_low    || '#e74c3c',
           'N/A':  config.color_na     || '#95a5a6'
         };
-        const BENCH_COLORS = {
-          High:   '#2980b9',
-          Medium: '#8e44ad',
-          Low:    '#c0392b',
-          'N/A':  '#95a5a6'
+        const BENCH_RISK_COLORS = {
+          'Low Risk':  config.color_high   || '#81e84c',
+          'Mid Risk':  config.color_medium || '#e2e829',
+          'High Risk': config.color_low    || '#e74c3c',
+          'N/A':       config.color_na     || '#95a5a6'
         };
 
         this._colorMode = config.color_mode || 'org_health';
 
-        const nodeColor = d => this._colorMode === 'org_health'
-          ? (OHI_COLORS[d.data.org_health_index]  || OHI_COLORS['N/A'])
-          : (BENCH_COLORS[d.data.bench_strength]  || BENCH_COLORS['N/A']);
+        const nodeColor = d => {
+          if (this._colorMode === 'bench_risk') {
+            return BENCH_RISK_COLORS[d.data.bench_risk] || BENCH_RISK_COLORS['N/A'];
+          }
+          return OHI_COLORS[d.data.org_health_index] || OHI_COLORS['N/A'];
+        };
 
-        const scheme = this._colorMode === 'org_health' ? OHI_COLORS : BENCH_COLORS;
-        document.getElementById('to-legend').innerHTML = Object.entries(scheme)
-          .map(([k, c]) => `<div class="to-legend-item"><div class="to-legend-dot" style="background:${c}"></div>${k}</div>`)
-          .join('');
+        const renderColorLegend = () => {
+          const scheme = this._colorMode === 'bench_risk' ? BENCH_RISK_COLORS : OHI_COLORS;
+          document.getElementById('to-color-legend').innerHTML = Object.entries(scheme)
+            .map(([k, c]) => `<div class="to-legend-item"><div class="to-legend-dot" style="background:${c}"></div>${k}</div>`)
+            .join('');
+        };
+        renderColorLegend();
 
+        // ── Summary stats ──────────────────────────────────────────
+        const totalEmployees    = nodes.length;
+        const totalMissionCritical = nodes.filter(n => n.is_mission_critical_position == true || n.is_mission_critical_position === 'true' || n.is_mission_critical_position === 1).length;
+        const totalCriticalTalent  = nodes.filter(n => n.is_talent == true || n.is_talent === 'true' || n.is_talent === 1).length;
+
+        const ohiGroups = { High: 0, Medium: 0, Low: 0, 'N/A': 0 };
+        const brGroups  = { 'Low Risk': 0, 'Mid Risk': 0, 'High Risk': 0, 'N/A': 0 };
+        nodes.forEach(n => {
+          const ohi = n.org_health_index || 'N/A';
+          if (ohi in ohiGroups) ohiGroups[ohi]++; else ohiGroups['N/A']++;
+          const br = n.bench_risk || 'N/A';
+          if (br in brGroups) brGroups[br]++; else brGroups['N/A']++;
+        });
+
+        const dot = color => `<span class="to-summary-dot" style="background:${color}"></span>`;
+
+        document.getElementById('to-summary').innerHTML = `
+          <div class="to-summary-title">Summary</div>
+          <div class="to-summary-row"><span class="to-summary-label">Employees</span><span class="to-summary-value">${totalEmployees}</span></div>
+          <div class="to-summary-row"><span class="to-summary-label">Mission Critical</span><span class="to-summary-value">${totalMissionCritical}</span></div>
+          <div class="to-summary-row"><span class="to-summary-label">Critical Talent</span><span class="to-summary-value">${totalCriticalTalent}</span></div>
+          <div class="to-summary-section">
+            <div class="to-summary-section-title">Org Health Index</div>
+            ${Object.entries(ohiGroups).map(([k, v]) => `
+              <div class="to-summary-dot-row">
+                <span style="display:flex;align-items:center;gap:5px;">${dot(OHI_COLORS[k] || '#95a5a6')}<span class="to-summary-label">${k}</span></span>
+                <span class="to-summary-value">${v}</span>
+              </div>`).join('')}
+          </div>
+          <div class="to-summary-section">
+            <div class="to-summary-section-title">Bench Risk</div>
+            ${Object.entries(brGroups).map(([k, v]) => `
+              <div class="to-summary-dot-row">
+                <span style="display:flex;align-items:center;gap:5px;">${dot(BENCH_RISK_COLORS[k] || '#95a5a6')}<span class="to-summary-label">${k}</span></span>
+                <span class="to-summary-value">${v}</span>
+              </div>`).join('')}
+          </div>
+        `;
+
+        // ── Build tree ─────────────────────────────────────────────
         let root;
         try {
           root = d3.stratify()
@@ -214,10 +267,10 @@
         const cx = W / 2;
         const cy = H / 2;
 
-        const leafCount   = root.leaves().length;
-        const minRadius   = Math.min(W, H) / 2 - 60;
-        const radius      = Math.max(minRadius, (leafCount * 22) / (2 * Math.PI));
-        const fitScale    = Math.min(1, (Math.min(W, H) - 80) / (radius * 2 + 120));
+        const leafCount = root.leaves().length;
+        const minRadius = Math.min(W, H) / 2 - 60;
+        const radius    = Math.max(minRadius, (leafCount * 22) / (2 * Math.PI));
+        const fitScale  = Math.min(1, (Math.min(W, H) - 80) / (radius * 2 + 120));
 
         const svg = d3.select(this._chart).append('svg').attr('width', W).attr('height', H);
         const g   = svg.append('g');
@@ -238,7 +291,6 @@
           return [r * Math.cos(angle - Math.PI / 2), r * Math.sin(angle - Math.PI / 2)];
         }
 
-        // Concentric guide rings
         const depths = [...new Set(root.descendants().map(d => d.depth))].filter(d => d > 0);
         const ringG  = g.append('g');
         depths.forEach(depth => {
@@ -250,12 +302,10 @@
             .attr('stroke-dasharray', '3,3');
         });
 
-        // Links
         g.append('g').attr('fill', 'none').attr('stroke', '#ccc').attr('stroke-width', 1)
           .selectAll('path').data(root.links()).join('path')
           .attr('d', d3.linkRadial().angle(d => d.x).radius(d => d.y));
 
-        // Nodes
         const self  = this;
         const nodeG = g.append('g').selectAll('g').data(root.descendants()).join('g')
           .attr('transform', d => {
@@ -265,7 +315,7 @@
           .style('cursor', 'pointer')
           .on('click', function (event, d) {
             event.stopPropagation();
-            self._showTooltip(event, d, OHI_COLORS, BENCH_COLORS);
+            self._showTooltip(event, d, OHI_COLORS, BENCH_RISK_COLORS);
             nodeG.selectAll('.to-node-circle')
               .attr('stroke', n => n.data.talent_role_id === d.data.talent_role_id ? '#3498db' : 'none')
               .attr('stroke-width', 2.5);
@@ -287,44 +337,41 @@
           .attr('stroke', '#fff')
           .attr('stroke-width', d => d.depth === 0 ? 3 : 1.5);
 
-        // Zoom button wiring
         document.getElementById('to-zoom-in').onclick    = () => svg.transition().duration(250).call(zoomBehavior.scaleBy, 1.3);
         document.getElementById('to-zoom-out').onclick   = () => svg.transition().duration(250).call(zoomBehavior.scaleBy, 0.77);
         document.getElementById('to-zoom-reset').onclick = () => svg.transition().duration(350).call(zoomBehavior.transform, this._initT);
 
-        // Color toggle wiring
         document.getElementById('to-btn-ohi').onclick = () => {
           document.getElementById('to-btn-ohi').classList.add('active');
-          document.getElementById('to-btn-bench').classList.remove('active');
+          document.getElementById('to-btn-bench-risk').classList.remove('active');
           this._colorMode = 'org_health';
           nodeG.selectAll('circle:not(.to-node-circle)').attr('fill', d => nodeColor(d));
-          document.getElementById('to-legend').innerHTML = Object.entries(OHI_COLORS)
-            .map(([k, c]) => `<div class="to-legend-item"><div class="to-legend-dot" style="background:${c}"></div>${k}</div>`).join('');
+          renderColorLegend();
         };
-        document.getElementById('to-btn-bench').onclick = () => {
-          document.getElementById('to-btn-bench').classList.add('active');
+        document.getElementById('to-btn-bench-risk').onclick = () => {
+          document.getElementById('to-btn-bench-risk').classList.add('active');
           document.getElementById('to-btn-ohi').classList.remove('active');
-          this._colorMode = 'bench';
+          this._colorMode = 'bench_risk';
           nodeG.selectAll('circle:not(.to-node-circle)').attr('fill', d => nodeColor(d));
-          document.getElementById('to-legend').innerHTML = Object.entries(BENCH_COLORS)
-            .map(([k, c]) => `<div class="to-legend-item"><div class="to-legend-dot" style="background:${c}"></div>${k}</div>`).join('');
+          renderColorLegend();
         };
 
         done();
       },
 
-      _showTooltip(event, d, OHI_COLORS, BENCH_COLORS) {
-        const data     = d.data;
-        const ohi      = data.org_health_index || 'N/A';
-        const bench    = data.bench_strength   || 'N/A';
-        const score    = data.role_fit_score;
-        const color    = OHI_COLORS[ohi] || OHI_COLORS['N/A'];
-        const initials = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
-        const scorePct = score != null ? Math.min(100, Math.round(score)) : 0;
+      _showTooltip(event, d, OHI_COLORS, BENCH_RISK_COLORS) {
+        const data      = d.data;
+        const ohi       = data.org_health_index || 'N/A';
+        const benchRisk = data.bench_risk        || 'N/A';
+        const score     = data.role_fit_score;
+        const ohiColor  = OHI_COLORS[ohi]              || OHI_COLORS['N/A'];
+        const brColor   = BENCH_RISK_COLORS[benchRisk] || BENCH_RISK_COLORS['N/A'];
+        const initials  = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
+        const scorePct  = score != null ? Math.min(100, Math.round(score)) : 0;
 
         this._tooltip.innerHTML = `
           <div class="to-tt-header">
-            <div class="to-tt-avatar" style="background:${color}">${initials}</div>
+            <div class="to-tt-avatar" style="background:${ohiColor}">${initials}</div>
             <div>
               <div class="to-tt-name">${data.employee_name || '—'}</div>
               <div class="to-tt-role">${data.talent_role_name || '—'}</div>
@@ -333,7 +380,7 @@
           <div class="to-tt-row">
             <span class="to-tt-label">Org Health</span>
             <span class="to-tt-badge">
-              <span class="to-tt-dot" style="background:${color}"></span>
+              <span class="to-tt-dot" style="background:${ohiColor}"></span>
               <b>${ohi}</b>
             </span>
           </div>
@@ -342,13 +389,16 @@
             <span style="display:flex;align-items:center;gap:6px;">
               <b class="to-tt-value">${score != null ? score : '—'}</b>
               <div class="to-score-wrap">
-                <div class="to-score-bar" style="width:${scorePct}%;background:${color}"></div>
+                <div class="to-score-bar" style="width:${scorePct}%;background:${ohiColor}"></div>
               </div>
             </span>
           </div>
           <div class="to-tt-row">
-            <span class="to-tt-label">Bench Strength</span>
-            <span class="to-tt-value" style="color:${BENCH_COLORS[bench] || '#fff'}">${bench}</span>
+            <span class="to-tt-label">Bench Risk</span>
+            <span class="to-tt-badge">
+              <span class="to-tt-dot" style="background:${brColor}"></span>
+              <b>${benchRisk}</b>
+            </span>
           </div>
           <div class="to-tt-row">
             <span class="to-tt-label">Reports To</span>
@@ -360,7 +410,7 @@
           </div>
         `;
 
-        const pad = 12, tw = 240, th = 190;
+        const pad = 12, tw = 240, th = 210;
         let left = event.clientX + pad;
         let top  = event.clientY + pad;
         if (left + tw > window.innerWidth)  left = event.clientX - tw - pad;
@@ -374,7 +424,6 @@
     });
   }
 
-  // Self-load D3 v7 if not already present, then initialise
   if (window.d3) {
     init();
   } else {
