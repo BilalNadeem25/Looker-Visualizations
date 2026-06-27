@@ -83,6 +83,14 @@
           .to-summary-section-title { font-weight:600; color:#555; margin-bottom:3px; }
           .to-summary-dot-row { display:flex; align-items:center; justify-content:space-between; padding:2px 0; gap:8px; }
           .to-summary-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+          .to-search { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:10; display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }
+          .to-search input { border:1px solid #ddd; border-radius:4px; padding:3px 8px; font-size:11px; outline:none; width:180px; color:#333; }
+          .to-search input:focus { border-color:#3498db; }
+          .to-search-clear { font-size:13px; color:#aaa; cursor:pointer; line-height:1; padding:0 2px; }
+          .to-search-clear:hover { color:#555; }
+          .to-node-label rect { fill:#fff; stroke:#ddd; stroke-width:1; rx:3; }
+          .to-node-label-role { font-size:11px; font-weight:700; fill:#222; }
+          .to-node-label-name { font-size:10px; fill:#777; }
         `;
         element.appendChild(style);
 
@@ -113,6 +121,15 @@
           <button class="to-zoom-btn" id="to-zoom-reset" style="font-size:11px;">⊙</button>
         `;
         element.appendChild(zoomEl);
+
+        const searchEl = document.createElement('div');
+        searchEl.className = 'to-search';
+        searchEl.innerHTML = `
+          <span style="font-size:11px;color:#888;">🔍</span>
+          <input type="text" id="to-search-input" placeholder="Search employee or role…">
+          <span class="to-search-clear" id="to-search-clear" title="Clear">✕</span>
+        `;
+        element.appendChild(searchEl);
 
         const chart = document.createElement('div');
         chart.id = 'to-chart';
@@ -188,6 +205,26 @@
         }));
 
         if (!nodes.length) { done(); return; }
+
+        // When Looker filters remove rows, some nodes may reference a parent
+        // that is no longer in the dataset. Promote those nodes to roots, then
+        // wrap multiple roots under a single synthetic root so stratify succeeds.
+        const idSet = new Set(nodes.map(n => n.talent_role_id));
+        nodes.forEach(n => {
+          if (n.parent_talent_role_id && !idSet.has(n.parent_talent_role_id)) {
+            n.parent_talent_role_id = null;
+          }
+        });
+        const roots = nodes.filter(n => !n.parent_talent_role_id);
+        if (roots.length > 1) {
+          nodes.unshift({
+            talent_role_id: '__root__', parent_talent_role_id: null,
+            employee_name: '', talent_role_name: '', parent_talent_role_name: null,
+            org_health_index: 'N/A', bench_risk: 'N/A',
+            is_mission_critical_position: false, is_talent: false, role_fit_score: null
+          });
+          roots.forEach(n => { n.parent_talent_role_id = '__root__'; });
+        }
 
         const OHI_COLORS = {
           High:   config.color_high   || '#81e84c',
@@ -365,6 +402,81 @@
           nodeG.selectAll('circle:not(.to-node-circle)').attr('fill', d => nodeColor(d));
           renderColorLegend();
         };
+
+        // ── Search / highlight ─────────────────────────────────────
+        const labelG = g.append('g').attr('class', 'to-labels');
+
+        const applySearch = query => {
+          labelG.selectAll('*').remove();
+          const q = query.trim().toLowerCase();
+
+          if (!q) {
+            nodeG.style('opacity', 1);
+            return;
+          }
+
+          nodeG.style('opacity', d => {
+            if (d.data.talent_role_id === '__root__') return 0.15;
+            const name = (d.data.employee_name   || '').toLowerCase();
+            const role = (d.data.talent_role_name || '').toLowerCase();
+            return (name.includes(q) || role.includes(q)) ? 1 : 0.12;
+          });
+
+          // draw callout labels for matched nodes
+          root.descendants().forEach(d => {
+            if (d.data.talent_role_id === '__root__') return;
+            const name = (d.data.employee_name   || '').toLowerCase();
+            const role = (d.data.talent_role_name || '').toLowerCase();
+            if (!name.includes(q) && !role.includes(q)) return;
+
+            const [nx, ny] = radialPoint(d.x, d.y);
+            const labelX   = nx + (nx >= 0 ? 14 : -14);
+            const labelY   = ny - 22;
+            const roleText = d.data.talent_role_name || '';
+            const nameText = d.data.employee_name    || '';
+            const boxW     = Math.max(roleText.length, nameText.length) * 6.2 + 16;
+            const boxH     = 32;
+            const anchor   = nx >= 0 ? 0 : -boxW;
+
+            const lg = labelG.append('g').attr('transform', `translate(${nx},${ny})`);
+
+            // connector line
+            lg.append('line')
+              .attr('x1', 0).attr('y1', 0)
+              .attr('x2', labelX - nx).attr('y2', labelY - ny + boxH / 2)
+              .attr('stroke', '#3498db').attr('stroke-width', 1).attr('opacity', 0.6);
+
+            // box
+            lg.append('rect')
+              .attr('x', labelX - nx + anchor).attr('y', labelY - ny)
+              .attr('width', boxW).attr('height', boxH)
+              .attr('rx', 3).attr('fill', '#fff')
+              .attr('stroke', '#3498db').attr('stroke-width', 1);
+
+            lg.append('text').attr('class', 'to-node-label-role')
+              .attr('x', labelX - nx + anchor + 7).attr('y', labelY - ny + 13)
+              .text(roleText);
+
+            lg.append('text').attr('class', 'to-node-label-name')
+              .attr('x', labelX - nx + anchor + 7).attr('y', labelY - ny + 26)
+              .text(nameText);
+          });
+        };
+
+        const searchInput = document.getElementById('to-search-input');
+        const searchClear = document.getElementById('to-search-clear');
+
+        // replace old listener to avoid stacking on re-renders
+        const newInput = searchInput.cloneNode(true);
+        const newClear = searchClear.cloneNode(true);
+        searchInput.replaceWith(newInput);
+        searchClear.replaceWith(newClear);
+
+        newInput.addEventListener('input', () => applySearch(newInput.value));
+        newClear.addEventListener('click', () => { newInput.value = ''; applySearch(''); });
+
+        // re-apply any active search after re-render
+        if (newInput.value) applySearch(newInput.value);
 
         done();
       },
