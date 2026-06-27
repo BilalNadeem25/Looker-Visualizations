@@ -163,6 +163,15 @@
           return 'N/A';
         };
 
+        const normBenchRisk = v => {
+          if (v === null || v === undefined) return 'N/A';
+          const s = String(v).toLowerCase().trim();
+          if (s === 'low'    || s === 'low risk'  || s === '1') return 'Low Risk';
+          if (s === 'medium' || s === 'mid risk'  || s === '2') return 'Mid Risk';
+          if (s === 'high'   || s === 'high risk' || s === '3') return 'High Risk';
+          return 'N/A';
+        };
+
         const nodes = data.map(row => ({
           talent_role_id:             String(pick(row, 'talent_role_id') ?? ''),
           parent_talent_role_id:      (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'parent_talent_role_id')),
@@ -171,7 +180,7 @@
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
           client_name:                pick(row, 'client_name') ?? '—',
           bench_strength:             normBench(pick(row, 'bench_strength')),
-          bench_risk:                 pick(row, 'bench_risk') ?? 'N/A',
+          bench_risk:                 normBenchRisk(pick(row, 'bench_risk')),
           is_mission_critical_position: pick(row, 'is_mission_critical_position'),
           is_talent:                  pick(row, 'is_talent'),
           role_fit_score:             pick(row, 'role_fit_score'),
@@ -229,8 +238,8 @@
         document.getElementById('to-summary').innerHTML = `
           <div class="to-summary-title">Summary</div>
           <div class="to-summary-row"><span class="to-summary-label">Employees</span><span class="to-summary-value">${totalEmployees}</span></div>
-          <div class="to-summary-row"><span class="to-summary-label">Mission Critical</span><span class="to-summary-value">${totalMissionCritical}</span></div>
-          <div class="to-summary-row"><span class="to-summary-label">Critical Talent</span><span class="to-summary-value">${totalCriticalTalent}</span></div>
+          <div class="to-summary-row"><span class="to-summary-label">MCP</span><span class="to-summary-value">${totalMissionCritical}</span></div>
+          <div class="to-summary-row"><span class="to-summary-label">Critical Talents</span><span class="to-summary-value">${totalCriticalTalent}</span></div>
           <div class="to-summary-section">
             <div class="to-summary-section-title">Org Health Index</div>
             ${Object.entries(ohiGroups).map(([k, v]) => `
