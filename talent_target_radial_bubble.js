@@ -40,9 +40,11 @@
   .nx-chip{display:inline-flex; align-items:center; gap:6px}
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
-  .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0}
+  .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   .nx-chartwrap{flex:1 1 auto; min-width:0; min-height:0; position:relative; padding:6px}
-  .nx-wrap.has-cards .nx-chartwrap{flex:0 0 55%}
+  /* while comparing, the chart keeps a fixed height and stays pinned; the cards area
+     below grows with the number of selected employees and the stage scrolls. */
+  .nx-wrap.has-cards .nx-chartwrap{flex:0 0 440px; position:sticky; top:0; background:var(--panel); z-index:2}
   .nx-chart{width:100%; height:100%; display:block; cursor:grab; touch-action:none}
   .nx-chart:active{cursor:grabbing}
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
@@ -55,8 +57,7 @@
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
 
-  .nx-panel{flex:0 0 auto; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow-x:hidden; overflow-y:auto}
-  .nx-wrap.has-cards .nx-panel{flex:1 1 auto; min-height:0}
+  .nx-panel{flex:0 0 auto; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
   .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
   .nx-cardremove{position:absolute; top:12px; right:12px; z-index:2; width:22px; height:22px; border-radius:50%;
     border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer;
@@ -82,8 +83,15 @@
   .nx-sec{padding:16px 22px; border-bottom:1px solid var(--line)}
   .nx-sectitle{font-size:10px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:#8c96a3; margin-bottom:13px}
   .nx-quad{margin-bottom:15px} .nx-quad:last-child{margin-bottom:0}
-  .nx-quadhead{display:flex; justify-content:space-between; align-items:baseline; font-size:13px; font-weight:700; margin-bottom:6px}
+  .nx-quadhead{display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:700; margin-bottom:6px; cursor:pointer; user-select:none}
+  .nx-quadhead:hover{color:var(--accent)}
   .nx-quadhead .s{font-variant-numeric:tabular-nums}
+  .nx-qh-left{display:flex; align-items:center; gap:7px; min-width:0}
+  .nx-sk-note{font-weight:600; font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:#9aa4b0}
+  .nx-chev{color:#9aa4b0; font-size:9px; display:inline-block; transition:transform .15s; flex:0 0 auto}
+  .nx-quad.is-collapsed .nx-chev{transform:rotate(-90deg)}
+  .nx-quad.is-collapsed .nx-collapse-body{display:none}
+  .nx-skills{margin-top:2px}
   .nx-bar{height:7px; border-radius:5px; background:var(--line); overflow:hidden}
   .nx-bar i{display:block; height:100%; border-radius:5px}
   .nx-subrow{display:flex; justify-content:space-between; font-size:12px; color:#5a6472; padding:4px 0 4px 14px}
@@ -169,6 +177,7 @@
       this.state = {
         employees: [], roleKey: null, selectedUsers: [], search: "",
         maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null,
+        collapsed: {},   // shared across cards so rows stay aligned when comparing
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
@@ -208,8 +217,14 @@
         window.addEventListener("pointerup", function () { st.panning = false; });
       }
       $.panel.addEventListener("click", function (e) {
-        var b = e.target.closest(".nx-cardremove"); if (!b) return;
-        self._toggleUser(b.getAttribute("data-uid")); self._draw();
+        var rm = e.target.closest(".nx-cardremove");
+        if (rm) { self._toggleUser(rm.getAttribute("data-uid")); self._draw(); return; }
+        var hd = e.target.closest("[data-collapse]");
+        if (hd) {
+          var k = hd.getAttribute("data-collapse");
+          st.collapsed[k] = !st.collapsed[k];   // shared toggle -> re-render all cards
+          self._renderPanels();
+        }
       });
     },
 
@@ -365,6 +380,7 @@
       var nlen = (emp.name || "").length;
       var nsize = nlen <= 14 ? 16 : nlen <= 22 ? 15 : nlen <= 30 ? 14 : nlen <= 40 ? 13 : 12;
 
+      var collapsed = this.state.collapsed;
       var quadOrder = ["Leadership", "Agility", "Cultural Fit"], byQuad = {};
       emp.subcompetencies.forEach(function (s) { var q = s.quadrant || s.parent || ""; (byQuad[q] = byQuad[q] || []).push(s); });
       var quadHtml = quadOrder.map(function (q) {
@@ -372,8 +388,14 @@
         var subs = (byQuad[q] || []).map(function (s) {
           return '<div class="nx-subrow"><span>' + esc(s.name) + '</span><span class="ss">' + Math.round(s.weighted_score || 0) + '%</span></div>';
         }).join("");
-        return '<div class="nx-quad"><div class="nx-quadhead"><span>' + esc(q) + '</span><span class="s">' + score + '%</span></div>' +
-               '<div class="nx-bar"><i style="width:' + Math.min(100, score) + '%;background:' + col + '"></i></div>' + subs + '</div>';
+        return '<div class="nx-quad' + (collapsed[q] ? ' is-collapsed' : '') + '">' +
+                 '<div class="nx-quadhead" data-collapse="' + esc(q) + '">' +
+                   '<span class="nx-qh-left"><span class="nx-chev">▾</span>' + esc(q) + '</span>' +
+                   '<span class="s">' + score + '%</span>' +
+                 '</div>' +
+                 '<div class="nx-bar"><i style="width:' + Math.min(100, score) + '%;background:' + col + '"></i></div>' +
+                 '<div class="nx-collapse-body">' + subs + '</div>' +
+               '</div>';
       }).join("");
 
       var fCls = { "MATCHED": "matched", "MISMATCH": "mismatch", "DEVELOPMENT NEEDED": "development", "UNMATCHED": "unmatched", "ADDITIONAL": "additional" };
@@ -401,7 +423,15 @@
         '</div>' +
         '<div class="nx-vs">Compared against <b>' + esc(emp.roleName) + '</b></div>' +
         '<div class="nx-sec"><div class="nx-sectitle">Competencies — weighted</div>' + quadHtml + '</div>' +
-        '<div class="nx-sec"><div class="nx-sectitle">Skills — match vs required proficiency</div>' + skillsHtml + '</div>';
+        '<div class="nx-sec">' +
+          '<div class="nx-quad nx-skills' + (collapsed['Skills'] ? ' is-collapsed' : '') + '">' +
+            '<div class="nx-quadhead" data-collapse="Skills">' +
+              '<span class="nx-qh-left"><span class="nx-chev">▾</span>Skills</span>' +
+              '<span class="s nx-sk-note">vs required</span>' +
+            '</div>' +
+            '<div class="nx-collapse-body">' + skillsHtml + '</div>' +
+          '</div>' +
+        '</div>';
     }
   });
 })();
