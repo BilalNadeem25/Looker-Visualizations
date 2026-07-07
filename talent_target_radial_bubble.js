@@ -40,8 +40,9 @@
   .nx-chip{display:inline-flex; align-items:center; gap:6px}
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
-  .nx-stage{display:flex; flex:1 1 auto; min-height:0}
-  .nx-chartwrap{flex:1 1 auto; min-width:0; position:relative; padding:6px}
+  .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0}
+  .nx-chartwrap{flex:1 1 auto; min-width:0; min-height:0; position:relative; padding:6px}
+  .nx-wrap.has-cards .nx-chartwrap{flex:0 0 55%}
   .nx-chart{width:100%; height:100%; display:block; cursor:grab; touch-action:none}
   .nx-chart:active{cursor:grabbing}
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
@@ -54,14 +55,14 @@
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
 
-  .nx-panel{flex:0 0 auto; max-width:64%; border-left:1px solid var(--line); background:var(--panel); display:flex; overflow-x:auto; overflow-y:hidden}
-  .nx-cardcol{flex:0 0 320px; width:320px; overflow-y:auto; border-right:1px solid var(--line-soft); position:relative}
-  .nx-cardcol:last-child{border-right:none}
+  .nx-panel{flex:0 0 auto; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow-x:hidden; overflow-y:auto}
+  .nx-wrap.has-cards .nx-panel{flex:1 1 auto; min-height:0}
+  .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
   .nx-cardremove{position:absolute; top:12px; right:12px; z-index:2; width:22px; height:22px; border-radius:50%;
     border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer;
     display:flex; align-items:center; justify-content:center}
   .nx-cardremove:hover{color:var(--ink); border-color:#c3ccd8}
-  .nx-empty{flex:1 1 auto; min-width:300px; display:flex; align-items:center; justify-content:center; padding:28px}
+  .nx-empty{grid-column:1 / -1; display:flex; align-items:center; justify-content:center; padding:24px}
   .nx-empty p{color:#9aa4b0; font-size:13px; text-align:center; line-height:1.6; max-width:24ch}
   .nx-cardhead{display:flex; gap:14px; align-items:center; min-height:90px; padding:20px 40px 14px 22px; border-bottom:1px solid var(--line-soft)}
   .nx-avatar{width:54px; height:54px; border-radius:50%; flex:0 0 auto; object-fit:cover; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:19px}
@@ -97,9 +98,10 @@
   .flag-development{background:#eaf2ff; color:#2f6fdb}
   .flag-unmatched{background:#fdecea; color:#d1442c}
   .flag-additional{background:#eef0f4; color:#6b7684}
+  @media (max-width:1024px){ .nx-panel{grid-template-columns:repeat(2,minmax(0,1fr))} }
   @media (max-width:760px){
-    .nx-stage{flex-direction:column}
-    .nx-panel{flex:0 0 auto; width:100%; max-width:none; border-left:none; border-top:1px solid var(--line)}
+    .nx-wrap.has-cards .nx-chartwrap{flex:0 0 auto; height:360px}
+    .nx-panel{grid-template-columns:1fr}
     .nx-legend{margin-left:0}
   }`;
 
@@ -154,6 +156,7 @@
       var q = function (s) { return element.querySelector(s); };
       this.$ = {
         el: element,
+        wrap: q(".nx-wrap"),
         svg: q(".nx-chart"),
         panel: q(".nx-panel"),
         count: q(".nx-count"),
@@ -341,6 +344,7 @@
 
     _renderPanels: function () {
       var self = this, st = this.state, panel = this.$.panel;
+      this.$.wrap.classList.toggle("has-cards", st.selectedUsers.length > 0);
       if (!st.selectedUsers.length) {
         panel.innerHTML = '<div class="nx-empty"><p>Click employee bubbles to view and compare their profiles side by side.</p></div>';
         return;
