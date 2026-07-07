@@ -41,10 +41,11 @@
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
-  .nx-chartwrap{flex:1 1 auto; min-width:0; min-height:0; position:relative; padding:6px}
-  /* while comparing, the chart keeps a fixed height and stays pinned; the cards area
-     below grows with the number of selected employees and the stage scrolls. */
-  .nx-wrap.has-cards .nx-chartwrap{flex:0 0 440px; position:sticky; top:0; background:var(--panel); z-index:2}
+  /* Chart keeps a FIXED pixel height and stays pinned at the top, with or without a
+     selection (a % / flex-grow height collapses on Looker's first paint before the tile
+     has a resolved height). The cards area below grows as employees are added; the stage
+     scrolls. */
+  .nx-chartwrap{flex:0 0 440px; min-width:0; min-height:0; overflow:hidden; position:sticky; top:0; background:var(--panel); z-index:2; padding:6px}
   .nx-chart{width:100%; height:100%; display:block; cursor:grab; touch-action:none}
   .nx-chart:active{cursor:grabbing}
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
@@ -57,7 +58,7 @@
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
 
-  .nx-panel{flex:0 0 auto; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
+  .nx-panel{flex:1 1 auto; min-height:0; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
   .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
   .nx-cardremove{position:absolute; top:12px; right:12px; z-index:2; width:22px; height:22px; border-radius:50%;
     border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer;
@@ -108,7 +109,7 @@
   .flag-additional{background:#eef0f4; color:#6b7684}
   @media (max-width:1024px){ .nx-panel{grid-template-columns:repeat(2,minmax(0,1fr))} }
   @media (max-width:760px){
-    .nx-wrap.has-cards .nx-chartwrap{flex:0 0 auto; height:360px}
+    .nx-chartwrap{flex-basis:360px}
     .nx-panel{grid-template-columns:1fr}
     .nx-legend{margin-left:0}
   }`;
