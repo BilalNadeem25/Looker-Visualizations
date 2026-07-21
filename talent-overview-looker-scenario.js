@@ -148,7 +148,7 @@
           <button class="to-btn active" id="to-btn-ohi">Org Health Index</button>
           <button class="to-btn" id="to-btn-bench-risk">Bench Risk</button>
           <span style="width:1px;height:16px;background:#e0e0e0;margin:0 2px;"></span>
-          <button class="to-btn" id="to-btn-scenario" title="Simulate bench-risk changes">🧪 Scenario</button>
+          <button class="to-btn" id="to-btn-scenario" title="Simulate bench-risk changes">Simulate</button>
           <button class="to-btn" id="to-btn-reset" style="display:none;">↺ Reset</button>
         `;
         element.appendChild(toggle);
