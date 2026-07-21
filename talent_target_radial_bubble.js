@@ -33,6 +33,8 @@
   .nx-slider:focus-visible{outline:2px solid var(--accent); outline-offset:3px}
   .nx-search{font-size:14px; padding:7px 11px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); min-width:170px}
   .nx-search:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .nx-select{font-size:14px; padding:7px 11px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); min-width:210px; cursor:pointer}
+  .nx-select:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
   .nx-count{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
   .nx-rolelbl{font-size:12px; color:var(--muted)} .nx-rolelbl b{color:var(--ink)}
   .nx-legend{margin-left:auto; display:flex; align-items:center; gap:14px; font-size:12px; color:var(--muted)}
@@ -59,7 +61,7 @@
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
 
   .nx-panel{flex:1 1 auto; min-height:0; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
-  .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
+  .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:visible; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
   .nx-cardremove{position:absolute; top:12px; right:12px; z-index:2; width:22px; height:22px; border-radius:50%;
     border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer;
     display:flex; align-items:center; justify-content:center}
@@ -79,8 +81,19 @@
   .nx-stat .l{font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#9aa4b0}
   .nx-stat .v{font-size:13px; font-weight:700; margin-top:3px; font-variant-numeric:tabular-nums}
   .nx-bench{display:inline-block; padding:1px 8px; border-radius:10px; background:#eef3fb; color:var(--accent); font-size:12px; font-weight:800}
-  .nx-vs{padding:11px 22px; font-size:11px; color:var(--muted); background:var(--line-soft); border-bottom:1px solid var(--line)}
+  .nx-vs{position:relative; padding:11px 22px; font-size:11px; color:var(--muted); background:var(--line-soft); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:9px}
   .nx-vs b{color:var(--ink)}
+  .nx-vs .vs-txt{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nx-addrole{margin-left:auto; flex:0 0 auto; border:1px solid var(--line); background:#fff; color:var(--accent);
+    font-size:11px; font-weight:800; border-radius:8px; padding:3px 9px; cursor:pointer; letter-spacing:.02em}
+  .nx-addrole:hover{border-color:var(--accent)}
+  .nx-addrole:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .nx-rolemenu{position:absolute; z-index:6; top:calc(100% - 2px); right:22px; background:#fff; border:1px solid var(--line);
+    border-radius:11px; box-shadow:0 10px 28px rgba(20,30,45,.18); padding:6px; min-width:240px; max-height:250px; overflow:auto}
+  .nx-rolemenu .mt{font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:#9aa4b0; padding:5px 10px 7px}
+  .nx-roleopt{display:block; width:100%; text-align:left; border:none; background:none; padding:8px 10px; border-radius:8px; font-size:12.5px; color:var(--ink); cursor:pointer}
+  .nx-roleopt:hover{background:var(--line-soft)}
+  .nx-roleopt .rf{color:#9aa4b0; font-variant-numeric:tabular-nums}
   .nx-sec{padding:16px 22px; border-bottom:1px solid var(--line)}
   .nx-sectitle{font-size:10px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:#8c96a3; margin-bottom:13px}
   .nx-quad{margin-bottom:15px} .nx-quad:last-child{margin-bottom:0}
@@ -120,6 +133,10 @@
         '<div class="nx-field nx-sliderfield">' +
           '<label>Role fit max — <b class="nx-maxfit-val">34</b></label>' +
           '<input type="range" class="nx-slider nx-maxfit" min="0" max="72" step="1" value="34">' +
+        '</div>' +
+        '<div class="nx-field">' +
+          '<label>Chart role</label>' +
+          '<select class="nx-select nx-chartrole"></select>' +
         '</div>' +
         '<div class="nx-field">' +
           '<label>Search employee</label>' +
@@ -172,12 +189,14 @@
         roleLbl: q(".nx-rolelbl"),
         slider: q(".nx-maxfit"),
         sliderVal: q(".nx-maxfit-val"),
+        chartRole: q(".nx-chartrole"),
         search: q(".nx-search"),
         zoom: q(".nx-zoom")
       };
       this.state = {
-        employees: [], roleKey: null, selectedUsers: [], search: "",
-        maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null,
+        employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
+        selectedPairs: [], chartRole: null, openMenuPk: null,
+        search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null,
         collapsed: {},   // shared across cards so rows stay aligned when comparing
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
@@ -185,6 +204,10 @@
 
       $.slider.addEventListener("input", function () {
         st.maxRoleFit = Number($.slider.value); $.sliderVal.textContent = $.slider.value; self._draw();
+      });
+      $.chartRole.addEventListener("change", function () {
+        st.chartRole = $.chartRole.value; st.openMenuPk = null;
+        st.zoom = 1; st.panX = 0; st.panY = 0; self._draw();
       });
       $.search.addEventListener("input", function () {
         st.search = $.search.value.trim().toLowerCase(); self._draw();
@@ -216,10 +239,24 @@
           self._applyTransform();
         });
         window.addEventListener("pointerup", function () { st.panning = false; });
+        // click anywhere outside an open role menu closes it
+        window.addEventListener("pointerdown", function (e) {
+          if (!st.openMenuPk) return;
+          if (e.target.closest && (e.target.closest(".nx-rolemenu") || e.target.closest(".nx-addrole"))) return;
+          st.openMenuPk = null; self._renderPanels();
+        });
       }
       $.panel.addEventListener("click", function (e) {
         var rm = e.target.closest(".nx-cardremove");
-        if (rm) { self._toggleUser(rm.getAttribute("data-uid")); self._draw(); return; }
+        if (rm) { self._togglePair(rm.getAttribute("data-pk")); st.openMenuPk = null; self._draw(); return; }
+        var add = e.target.closest(".nx-addrole");
+        if (add) { var apk = add.getAttribute("data-pk"); st.openMenuPk = (st.openMenuPk === apk ? null : apk); self._renderPanels(); return; }
+        var opt = e.target.closest(".nx-roleopt");
+        if (opt) {
+          var npk = opt.getAttribute("data-pk");
+          if (npk && st.selectedPairs.indexOf(npk) < 0) st.selectedPairs.push(npk);
+          st.openMenuPk = null; self._draw(); return;
+        }
         var hd = e.target.closest("[data-collapse]");
         if (hd) {
           var k = hd.getAttribute("data-collapse");
@@ -255,6 +292,8 @@
         var uid = String(val(row, "user_id"));
         emps.push({
           userId: uid,
+          roleId: roleId,
+          pk: uid + "::" + roleId,
           angle: (hashStr(uid + "|" + roleId) % 10000) / 10000 * Math.PI * 2,
           name: val(row, "name") || "Unknown",
           jobTitle: val(row, "job_title") || "",
@@ -278,14 +317,35 @@
 
       var st = this.state;
       st.employees = emps;
+
+      // lookups keyed by (user, role) — the multi-role comparison relies on these
+      st.byPair = {}; st.rolesByUser = {}; var us = {}, roleNames = {};
+      emps.forEach(function (e) {
+        st.byPair[e.pk] = e;
+        us[e.userId] = true;
+        roleNames[e.roleId] = e.roleName;
+        var arr = st.rolesByUser[e.userId] || (st.rolesByUser[e.userId] = []);
+        if (!arr.some(function (r) { return r.id === e.roleId; })) arr.push({ id: e.roleId, name: e.roleName });
+      });
+      st.userIds = Object.keys(us);
+      st.rolesInView = Object.keys(roleNames)
+        .map(function (id) { return { id: id, name: roleNames[id] }; })
+        .sort(function (a, b) { return a.name.localeCompare(b.name); });
+
       var roleKey = Object.keys(roleIds).sort().join(",");
       var roleChanged = roleKey !== st.roleKey;
       st.roleKey = roleKey;
 
-      // re-baseline when the role (filter) changes or on first load
+      // re-baseline when the set of roles (filter) changes or on first load
       if (roleChanged || st.maxRoleFit == null) {
-        st.selectedUsers = [];
+        st.selectedPairs = [];
+        st.openMenuPk = null;
         st.zoom = 1; st.panX = 0; st.panY = 0;
+        // default chart role = the one the most employees are assessed against
+        var counts = {};
+        emps.forEach(function (e) { counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
+        st.chartRole = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0] || null;
+
         var cfgMax = Number(this._config.default_role_fit_max);
         if (cfgMax > 0) {
           st.maxRoleFit = Math.min(72, cfgMax);
@@ -294,20 +354,32 @@
           st.maxRoleFit = Math.min(72, Math.max(1, Math.ceil(dataMax)));
         }
       } else {
-        // keep only still-present selections
-        var present = {}; emps.forEach(function (e) { present[e.userId] = true; });
-        st.selectedUsers = st.selectedUsers.filter(function (u) { return present[u]; });
+        // keep only still-present selections and a valid chart role
+        st.selectedPairs = st.selectedPairs.filter(function (pk) { return st.byPair[pk]; });
+        if (!roleNames[st.chartRole]) {
+          var c2 = {}; emps.forEach(function (e) { c2[e.roleId] = (c2[e.roleId] || 0) + 1; });
+          st.chartRole = Object.keys(c2).sort(function (a, b) { return c2[b] - c2[a]; })[0] || null;
+        }
       }
-      this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
 
-      // role label (single role expected under the Looker filter)
-      var names = {}; emps.forEach(function (e) { names[e.roleName] = true; });
-      var nameList = Object.keys(names);
-      this.$.roleLbl.innerHTML = nameList.length === 1 ? "Target role: <b>" + esc(nameList[0]) + "</b>"
-        : (nameList.length > 1 ? "<b>" + nameList.length + " roles</b> in view" : "");
+      this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
+      this._populateRoleSelect();
+
+      // role label — multiple target roles are now expected in view
+      this.$.roleLbl.innerHTML = st.rolesInView.length === 1
+        ? "Target role: <b>" + esc(st.rolesInView[0].name) + "</b>"
+        : (st.rolesInView.length > 1 ? "<b>" + st.rolesInView.length + "</b> target roles in view" : "");
 
       this._draw();
       if (done) done();
+    },
+
+    _populateRoleSelect: function () {
+      var sel = this.$.chartRole, st = this.state;
+      sel.innerHTML = st.rolesInView.map(function (r) {
+        return '<option value="' + esc(r.id) + '">' + esc(r.name) + '</option>';
+      }).join("");
+      if (st.chartRole != null) sel.value = st.chartRole;
     },
 
     // ---- match-score + band helpers ----------------------------------------
@@ -316,9 +388,9 @@
       var c = this._config;
       return v >= c.high_band ? c.color_high : v >= c.medium_band ? c.color_medium : c.color_low;
     },
-    _toggleUser: function (uid) {
-      var a = this.state.selectedUsers, i = a.indexOf(uid);
-      if (i >= 0) a.splice(i, 1); else a.push(uid);
+    _togglePair: function (pk) {
+      var a = this.state.selectedPairs, i = a.indexOf(pk);
+      if (i >= 0) a.splice(i, 1); else a.push(pk);
     },
     _applyTransform: function () {
       var st = this.state;
@@ -334,8 +406,16 @@
     _draw: function () {
       var self = this, st = this.state, svg = this.$.svg;
       while (svg.firstChild) svg.removeChild(svg.firstChild);
-      var list = st.employees.slice().sort(function (a, b) { return b.roleFit - a.roleFit; });
-      this.$.count.textContent = list.length + " employees" + (st.selectedUsers.length ? " · " + st.selectedUsers.length + " selected" : "");
+
+      // one bubble per employee assessed against the selected chart role
+      var chartRole = st.chartRole;
+      var list = st.employees.filter(function (e) { return e.roleId === chartRole; })
+                             .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      var notAssessed = st.userIds.length - list.length;
+      this.$.count.textContent = list.length + " employees" +
+        (notAssessed > 0 ? " · " + notAssessed + " not assessed for this role" : "") +
+        (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+
       var W = 760, H = 504; svg.setAttribute("viewBox", "0 0 " + W + " " + H);
       var cx = W / 2, cy = H / 2, maxR = Math.min(W, H) / 2 - 34;
       st.chartRoot = svgEl("g", {}); svg.appendChild(st.chartRoot); this._applyTransform();
@@ -347,12 +427,12 @@
         var m = Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
         var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
-        var isSel = st.selectedUsers.indexOf(emp.userId) >= 0;
+        var isSel = st.selectedPairs.indexOf(emp.pk) >= 0;
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: "nx-bubble" + (isSel ? " sel" : "") });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 1, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.3 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 5, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 1 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
-        g.addEventListener("click", function () { if (st.dragMoved) return; self._toggleUser(emp.userId); self._draw(); });
+        g.addEventListener("click", function () { if (st.dragMoved) return; self._togglePair(emp.pk); self._draw(); });
         st.chartRoot.appendChild(g);
       });
       this._renderPanels();
@@ -360,26 +440,40 @@
 
     _renderPanels: function () {
       var self = this, st = this.state, panel = this.$.panel;
-      this.$.wrap.classList.toggle("has-cards", st.selectedUsers.length > 0);
-      if (!st.selectedUsers.length) {
-        panel.innerHTML = '<div class="nx-empty"><p>Click employee bubbles to view and compare their profiles side by side.</p></div>';
+      this.$.wrap.classList.toggle("has-cards", st.selectedPairs.length > 0);
+      if (!st.selectedPairs.length) {
+        panel.innerHTML = '<div class="nx-empty"><p>Click employee bubbles to view and compare profiles. Use ＋ role on a card to compare one person across roles.</p></div>';
         return;
       }
-      var byId = {}; st.employees.forEach(function (e) { byId[e.userId] = e; });
-      var cols = st.selectedUsers.map(function (uid) {
-        var emp = byId[uid]; if (!emp) return "";
-        return '<div class="nx-cardcol"><button class="nx-cardremove" data-uid="' + esc(uid) + '" title="Remove from comparison">&times;</button>' + self._cardHTML(emp) + '</div>';
+      var cols = st.selectedPairs.map(function (pk) {
+        var emp = st.byPair[pk]; if (!emp) return "";
+        return '<div class="nx-cardcol"><button class="nx-cardremove" data-pk="' + esc(pk) + '" title="Remove from comparison">&times;</button>' + self._cardHTML(emp) + '</div>';
       }).join("");
       panel.innerHTML = cols || '<div class="nx-empty"><p>Click employee bubbles to compare.</p></div>';
     },
 
     _cardHTML: function (emp) {
-      var self = this, fit = Math.round(emp.roleFit), fc = this._color(this._match(emp.roleFit));
+      var self = this, st = this.state, fit = Math.round(emp.roleFit), fc = this._color(this._match(emp.roleFit));
       var avatar = emp.picture
         ? '<img class="nx-avatar" src="' + esc(emp.picture) + '" alt="">'
         : '<div class="nx-avatar" style="background:' + fc + '">' + esc(initials(emp.name)) + '</div>';
       var nlen = (emp.name || "").length;
       var nsize = nlen <= 14 ? 16 : nlen <= 22 ? 15 : nlen <= 30 ? 14 : nlen <= 40 ? 13 : 12;
+
+      // roles this person could still be added against (not already carded)
+      var carded = {}; st.selectedPairs.forEach(function (pk) { carded[pk] = true; });
+      var avail = (st.rolesByUser[emp.userId] || []).filter(function (r) { return !carded[emp.userId + "::" + r.id]; })
+        .sort(function (a, b) { return a.name.localeCompare(b.name); });
+      var addBtn = avail.length
+        ? '<button class="nx-addrole" data-pk="' + esc(emp.pk) + '" title="Compare this person against another role">＋ role</button>' : '';
+      var menu = (st.openMenuPk === emp.pk)
+        ? '<div class="nx-rolemenu"><div class="mt">Add ' + esc((emp.name || "").split(/\s+/)[0]) + ' vs…</div>' +
+            avail.map(function (r) {
+              var p = emp.userId + "::" + r.id, f = st.byPair[p];
+              return '<button class="nx-roleopt" data-pk="' + esc(p) + '">' + esc(r.name) +
+                     ' <span class="rf">· ' + Math.round(f ? f.roleFit : 0) + '% fit</span></button>';
+            }).join("") +
+          '</div>' : '';
 
       var collapsed = this.state.collapsed;
       var quadOrder = ["Leadership", "Agility", "Cultural Fit"], byQuad = {};
@@ -422,7 +516,7 @@
           '<div class="nx-stat"><div class="l">Bench strength</div><div class="v">' + bench + '</div></div>' +
           '<div class="nx-stat"><div class="l">Performance</div><div class="v">' + esc(perf) + '</div></div>' +
         '</div>' +
-        '<div class="nx-vs">Compared against <b>' + esc(emp.roleName) + '</b></div>' +
+        '<div class="nx-vs"><span class="vs-txt">Compared against <b>' + esc(emp.roleName) + '</b></span>' + addBtn + menu + '</div>' +
         '<div class="nx-sec"><div class="nx-sectitle">Competencies — weighted</div>' + quadHtml + '</div>' +
         '<div class="nx-sec">' +
           '<div class="nx-quad nx-skills' + (collapsed['Skills'] ? ' is-collapsed' : '') + '">' +
