@@ -350,7 +350,7 @@
         var isSel = st.selectedUsers.indexOf(emp.userId) >= 0;
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: "nx-bubble" + (isSel ? " sel" : "") });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 9, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 1.5 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 5, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 1 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
         g.addEventListener("click", function () { if (st.dragMoved) return; self._toggleUser(emp.userId); self._draw(); });
         st.chartRoot.appendChild(g);
