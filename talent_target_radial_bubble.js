@@ -135,10 +135,6 @@
           '<input type="range" class="nx-slider nx-maxfit" min="0" max="72" step="1" value="34">' +
         '</div>' +
         '<div class="nx-field">' +
-          '<label>Chart role</label>' +
-          '<select class="nx-select nx-chartrole"></select>' +
-        '</div>' +
-        '<div class="nx-field">' +
           '<label>Search employee</label>' +
           '<input type="search" class="nx-search" placeholder="Type a name…" autocomplete="off">' +
         '</div>' +
@@ -189,7 +185,6 @@
         roleLbl: q(".nx-rolelbl"),
         slider: q(".nx-maxfit"),
         sliderVal: q(".nx-maxfit-val"),
-        chartRole: q(".nx-chartrole"),
         search: q(".nx-search"),
         zoom: q(".nx-zoom")
       };
@@ -204,10 +199,6 @@
 
       $.slider.addEventListener("input", function () {
         st.maxRoleFit = Number($.slider.value); $.sliderVal.textContent = $.slider.value; self._draw();
-      });
-      $.chartRole.addEventListener("change", function () {
-        st.chartRole = $.chartRole.value; st.openMenuPk = null;
-        st.zoom = 1; st.panX = 0; st.panY = 0; self._draw();
       });
       $.search.addEventListener("input", function () {
         st.search = $.search.value.trim().toLowerCase(); self._draw();
@@ -363,7 +354,6 @@
       }
 
       this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
-      this._populateRoleSelect();
 
       // role label — multiple target roles are now expected in view
       this.$.roleLbl.innerHTML = st.rolesInView.length === 1
@@ -372,14 +362,6 @@
 
       this._draw();
       if (done) done();
-    },
-
-    _populateRoleSelect: function () {
-      var sel = this.$.chartRole, st = this.state;
-      sel.innerHTML = st.rolesInView.map(function (r) {
-        return '<option value="' + esc(r.id) + '">' + esc(r.name) + '</option>';
-      }).join("");
-      if (st.chartRole != null) sel.value = st.chartRole;
     },
 
     // ---- match-score + band helpers ----------------------------------------
@@ -430,7 +412,7 @@
         var isSel = st.selectedPairs.indexOf(emp.pk) >= 0;
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: "nx-bubble" + (isSel ? " sel" : "") });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 5, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 1 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
         g.addEventListener("click", function () { if (st.dragMoved) return; self._togglePair(emp.pk); self._draw(); });
         st.chartRoot.appendChild(g);
