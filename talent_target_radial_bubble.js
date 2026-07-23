@@ -128,6 +128,7 @@
   .nx-succ-field{display:none}
   .nx-wrap.simmode .nx-succ-field{display:flex}
   .nx-bubble.focus circle{stroke:var(--accent); stroke-width:3}
+  .nx-bubble.comp circle{stroke:var(--pos); stroke-width:3}
   .nx-wrap.simmode .nx-panel{display:block; padding:0}
   .cx-shell{padding:14px 16px 22px}
   .cx-cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
@@ -528,12 +529,16 @@
         var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
         var sim = st.mode === "simulate";
+        var isFocus = sim && emp.pk === st.simFocus;
+        var isComp = sim && !isFocus && !!st.simComplements[emp.pk];
         var cls = "nx-bubble";
-        if (sim) { if (emp.pk === st.simFocus) cls += " focus"; else if (st.simComplements[emp.pk]) cls += " sel"; }
-        else if (st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
+        if (isFocus) cls += " focus";
+        else if (isComp) cls += " comp";
+        else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
+        var nodeR = (isFocus || isComp) ? 6 : 2;   // enlarge successor + complements so they're findable/clickable
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: nodeR, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
