@@ -127,8 +127,8 @@
   .nx-seg button.on{background:var(--accent); color:#fff}
   .nx-succ-field{display:none}
   .nx-wrap.simmode .nx-succ-field{display:flex}
-  .nx-bubble.focus circle{stroke:var(--accent); stroke-width:3}
-  .nx-bubble.comp circle{stroke:var(--pos); stroke-width:3}
+  .nx-bubble.focus circle{stroke:var(--accent); stroke-width:2.5}
+  .nx-bubble.comp circle{stroke:var(--pos); stroke-width:2.5}
   .nx-wrap.simmode .nx-panel{display:block; padding:0}
   .cx-shell{padding:14px 16px 22px}
   .cx-cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
@@ -141,9 +141,11 @@
   .cx-ttl{font-size:12px; color:var(--muted)}
   .cx-meta{font-size:11px; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums}
   .cx-meta b{color:var(--ink); font-weight:600}
-  .cx-rec{position:absolute; top:11px; right:11px; font-size:9px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); border-radius:20px; padding:3px 8px}
-  .cx-remove{position:absolute; top:10px; right:10px; width:20px; height:20px; border-radius:50%; border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:14px; line-height:1; cursor:pointer}
+  .cx-rec-line{margin-top:6px}
+  .cx-rec-pill{display:inline-block; font-size:9px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); border-radius:20px; padding:3px 8px}
+  .cx-remove{position:absolute; top:10px; right:10px; width:22px; height:22px; border-radius:50%; border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer; z-index:2; display:flex; align-items:center; justify-content:center}
   .cx-remove:hover{color:var(--ink); border-color:#c3ccd8}
+  .cx-card.cx-on .cx-nm{padding-right:24px}
   .cx-gapfit{margin-top:9px; font-size:11px; color:var(--muted)}
   .cx-gapfit b{color:var(--pos); font-variant-numeric:tabular-nums}
   .cx-fh{margin-top:11px; padding-top:11px; border-top:1px solid var(--line-soft)}
@@ -535,10 +537,9 @@
         if (isFocus) cls += " focus";
         else if (isComp) cls += " comp";
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
-        var nodeR = (isFocus || isComp) ? 6 : 2;   // enlarge successor + complements so they're findable/clickable
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: nodeR, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
@@ -727,8 +728,8 @@
       comps.forEach(function (p) {
         var ov = self._wavg(function (b) { return p.beh[b.name] || 0; });
         html += '<div class="cx-card cx-on"><button class="cx-remove" data-pk="' + esc(p.pk) + '" title="Remove complement">&times;</button>' +
-          (recIds[p.pk] ? '<div class="cx-rec">Recommended</div>' : '') +
           '<div class="cx-eyebrow">Complement</div><div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
+          (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '') +
           '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b></div>' +
           '<div class="cx-gapfit">Covers selected gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
       });
