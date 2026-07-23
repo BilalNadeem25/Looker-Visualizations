@@ -20,7 +20,8 @@
   var STYLES = `
   .nx-wrap{
     --ground:#f5f7fa; --panel:#ffffff; --ink:#1b2431; --muted:#6b7684;
-    --line:#e7ebf1; --line-soft:#f0f3f7; --accent:#35507d;
+    --line:#e7ebf1; --line-soft:#f0f3f7; --accent:#35507d; --accent-soft:#eef3fb;
+    --pos:#1f9d57; --pos-soft:#e6f7ee; --neg:#d1442c; --neg-soft:#fdecea;
     font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     color:var(--ink); background:var(--panel); height:100%; display:flex; flex-direction:column;
   }
@@ -120,6 +121,59 @@
   .flag-development{background:#eaf2ff; color:#2f6fdb}
   .flag-unmatched{background:#fdecea; color:#d1442c}
   .flag-additional{background:#eef0f4; color:#6b7684}
+  /* ---- simulate mode (complementarity) ---- */
+  .nx-seg{display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; margin-top:1px}
+  .nx-seg button{border:none; background:#fff; color:var(--muted); font-size:12.5px; font-weight:700; padding:7px 13px; cursor:pointer}
+  .nx-seg button.on{background:var(--accent); color:#fff}
+  .nx-succ-field{display:none}
+  .nx-wrap.simmode .nx-succ-field{display:flex}
+  .nx-bubble.focus circle{stroke:var(--accent); stroke-width:3}
+  .nx-wrap.simmode .nx-panel{display:block; padding:0}
+  .cx-shell{padding:14px 16px 22px}
+  .cx-cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
+  .cx-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; flex:1 1 210px; min-width:200px; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
+  .cx-card.cx-focus{border-color:var(--accent); box-shadow:0 4px 16px rgba(53,80,125,.14)}
+  .cx-card.cx-on{border-color:var(--pos)}
+  .cx-eyebrow{font-size:9px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .cx-card.cx-focus .cx-eyebrow{color:var(--accent)}
+  .cx-nm{font-size:15px; font-weight:800; line-height:1.2; margin:3px 0 1px}
+  .cx-ttl{font-size:12px; color:var(--muted)}
+  .cx-meta{font-size:11px; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums}
+  .cx-meta b{color:var(--ink); font-weight:600}
+  .cx-rec{position:absolute; top:11px; right:11px; font-size:9px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); border-radius:20px; padding:3px 8px}
+  .cx-remove{position:absolute; top:10px; right:10px; width:20px; height:20px; border-radius:50%; border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:14px; line-height:1; cursor:pointer}
+  .cx-remove:hover{color:var(--ink); border-color:#c3ccd8}
+  .cx-gapfit{margin-top:9px; font-size:11px; color:var(--muted)}
+  .cx-gapfit b{color:var(--pos); font-variant-numeric:tabular-nums}
+  .cx-fh{margin-top:11px; padding-top:11px; border-top:1px solid var(--line-soft)}
+  .cx-row{display:flex; align-items:baseline; gap:9px}
+  .cx-solo{font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .cx-arrow{color:#b6bfca}
+  .cx-team{font-size:30px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums}
+  .cx-lift{font-size:14px; font-weight:800; font-variant-numeric:tabular-nums}
+  .cx-lift.cx-pos{color:var(--pos)}
+  .cx-cap{font-size:9px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin-top:5px}
+  .cx-reading{font-size:11px; color:var(--muted); margin-top:7px; line-height:1.5}
+  .cx-suggest{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px}
+  .cx-suggest-lbl{font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:#9aa4b0}
+  .cx-sugg{border:1px solid var(--line); background:#fff; color:var(--accent); font-weight:700; font-size:12px; border-radius:20px; padding:5px 11px; cursor:pointer}
+  .cx-sugg:hover{border-color:var(--accent)}
+  .cx-sugg-gf{color:var(--pos); font-variant-numeric:tabular-nums}
+  .cx-tblwrap{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow-x:auto}
+  .cx-tblwrap table{border-collapse:collapse; width:100%; min-width:520px}
+  .cx-tblwrap th,.cx-tblwrap td{padding:10px 13px; text-align:left; font-size:13px; border-bottom:1px solid var(--line-soft); white-space:nowrap}
+  .cx-tblwrap thead th{font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); background:#fbfcfe}
+  .cx-tblwrap td.cx-num,.cx-tblwrap th.cx-num{text-align:right; font-variant-numeric:tabular-nums}
+  .cx-tblwrap tr.cx-weakrow td.cx-beh{font-weight:700}
+  .cx-qtag{display:inline-block; font-size:9px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#9aa4b0; margin-left:7px}
+  .cx-chk{display:inline-flex; align-items:center; gap:8px; cursor:pointer}
+  .cx-chk input{accent-color:var(--accent); cursor:pointer}
+  .cx-barcell{display:flex; align-items:center; gap:8px; justify-content:flex-end}
+  .cx-mini{width:50px; height:6px; border-radius:4px; background:var(--line); overflow:hidden}
+  .cx-mini i{display:block; height:100%; border-radius:4px}
+  .cx-chip{display:inline-block; min-width:42px; text-align:center; font-weight:800; font-size:12px; border-radius:20px; padding:2px 8px; font-variant-numeric:tabular-nums}
+  .cx-chip.cx-p{background:var(--pos-soft); color:var(--pos)} .cx-chip.cx-n{background:var(--neg-soft); color:var(--neg)} .cx-chip.cx-z{background:var(--line-soft); color:var(--muted)}
+  .cx-footnote{font-size:11px; color:var(--muted); margin-top:11px; line-height:1.5}
   @media (max-width:1024px){ .nx-panel{grid-template-columns:repeat(2,minmax(0,1fr))} }
   @media (max-width:760px){
     .nx-chartwrap{flex-basis:360px}
@@ -137,6 +191,17 @@
         '<div class="nx-field">' +
           '<label>Search employee</label>' +
           '<input type="search" class="nx-search" placeholder="Type a name…" autocomplete="off">' +
+        '</div>' +
+        '<div class="nx-field">' +
+          '<label>Mode</label>' +
+          '<div class="nx-seg nx-mode">' +
+            '<button type="button" data-mode="compare" class="on">Compare</button>' +
+            '<button type="button" data-mode="simulate">Simulate</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="nx-field nx-succ-field">' +
+          '<label>Successor</label>' +
+          '<select class="nx-select nx-succ"></select>' +
         '</div>' +
         '<span class="nx-rolelbl"></span>' +
         '<span class="nx-count"></span>' +
@@ -186,11 +251,14 @@
         slider: q(".nx-maxfit"),
         sliderVal: q(".nx-maxfit-val"),
         search: q(".nx-search"),
+        mode: q(".nx-mode"),
+        succ: q(".nx-succ"),
         zoom: q(".nx-zoom")
       };
       this.state = {
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
         selectedPairs: [], chartRole: null, openMenuPk: null,
+        mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {},
         search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null,
         collapsed: {},   // shared across cards so rows stay aligned when comparing
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
@@ -202,6 +270,18 @@
       });
       $.search.addEventListener("input", function () {
         st.search = $.search.value.trim().toLowerCase(); self._draw();
+      });
+      $.mode.addEventListener("click", function (e) {
+        var b = e.target.closest("button[data-mode]"); if (!b) return;
+        st.mode = b.getAttribute("data-mode");
+        Array.prototype.forEach.call($.mode.querySelectorAll("button"), function (x) { x.classList.toggle("on", x === b); });
+        $.wrap.classList.toggle("simmode", st.mode === "simulate");
+        self._draw();
+      });
+      $.succ.addEventListener("change", function () {
+        st.simFocus = $.succ.value;
+        if (st.simComplements[st.simFocus]) st.simComplements[st.simFocus] = false;
+        self._defaultWeak(); self._draw();
       });
       $.zoom.addEventListener("click", function (e) {
         var b = e.target.closest("button"); if (!b) return;
@@ -238,6 +318,10 @@
         });
       }
       $.panel.addEventListener("click", function (e) {
+        var srm = e.target.closest(".cx-remove");
+        if (srm) { st.simComplements[srm.getAttribute("data-pk")] = false; self._draw(); return; }
+        var sug = e.target.closest(".cx-sugg");
+        if (sug) { st.simComplements[sug.getAttribute("data-pk")] = true; self._draw(); return; }
         var rm = e.target.closest(".nx-cardremove");
         if (rm) { self._togglePair(rm.getAttribute("data-pk")); st.openMenuPk = null; self._draw(); return; }
         var add = e.target.closest(".nx-addrole");
@@ -254,6 +338,10 @@
           st.collapsed[k] = !st.collapsed[k];   // shared toggle -> re-render all cards
           self._renderPanels();
         }
+      });
+      $.panel.addEventListener("change", function (e) {
+        var c = e.target.closest("input[data-sbeh]"); if (!c) return;
+        st.simWeak[c.getAttribute("data-sbeh")] = c.checked; self._renderSim();
       });
     },
 
@@ -309,6 +397,12 @@
       var st = this.state;
       st.employees = emps;
 
+      // per-employee behaviour lookup (subcompetency name -> score) for simulate mode
+      emps.forEach(function (e) {
+        e.beh = {};
+        e.subcompetencies.forEach(function (s) { if (s && s.name != null) e.beh[String(s.name)] = Math.round(num(s.weighted_score) || 0); });
+      });
+
       // lookups keyed by (user, role) — the multi-role comparison relies on these
       st.byPair = {}; st.rolesByUser = {}; var us = {}, roleNames = {};
       emps.forEach(function (e) {
@@ -355,6 +449,25 @@
 
       this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
 
+      // simulate-mode: behaviours scoped to the charted role, plus the successor default
+      this._buildBehaviours();
+      var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
+                                 .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      if (roleChanged) st.simComplements = {};
+      if (roleChanged || !st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole) {
+        st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
+        this._defaultWeak();
+      } else {
+        Object.keys(st.simComplements).forEach(function (pk) {
+          if (!st.byPair[pk] || st.byPair[pk].roleId !== st.chartRole) delete st.simComplements[pk];
+        });
+      }
+      this.$.succ.innerHTML = roleEmps.map(function (e) {
+        return '<option value="' + esc(e.pk) + '">' + esc(e.name) + (e.jobTitle ? " — " + esc(e.jobTitle) : "") + '</option>';
+      }).join("");
+      if (st.simFocus != null) this.$.succ.value = st.simFocus;
+      this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
+
       // role label — multiple target roles are now expected in view
       this.$.roleLbl.innerHTML = st.rolesInView.length === 1
         ? "Target role: <b>" + esc(st.rolesInView[0].name) + "</b>"
@@ -394,9 +507,14 @@
       var list = st.employees.filter(function (e) { return e.roleId === chartRole; })
                              .sort(function (a, b) { return b.roleFit - a.roleFit; });
       var notAssessed = st.userIds.length - list.length;
-      this.$.count.textContent = list.length + " employees" +
-        (notAssessed > 0 ? " · " + notAssessed + " not assessed for this role" : "") +
-        (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+      if (st.mode === "simulate") {
+        var cc = this._simComplementEmps().length;
+        this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
+      } else {
+        this.$.count.textContent = list.length + " employees" +
+          (notAssessed > 0 ? " · " + notAssessed + " not assessed for this role" : "") +
+          (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+      }
 
       var W = 760, H = 504; svg.setAttribute("viewBox", "0 0 " + W + " " + H);
       var cx = W / 2, cy = H / 2, maxR = Math.min(W, H) / 2 - 34;
@@ -409,15 +527,22 @@
         var m = Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
         var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
-        var isSel = st.selectedPairs.indexOf(emp.pk) >= 0;
+        var sim = st.mode === "simulate";
+        var cls = "nx-bubble";
+        if (sim) { if (emp.pk === st.simFocus) cls += " focus"; else if (st.simComplements[emp.pk]) cls += " sel"; }
+        else if (st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
-        var g = svgEl("g", { class: "nx-bubble" + (isSel ? " sel" : "") });
+        var g = svgEl("g", { class: cls });
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
-        g.addEventListener("click", function () { if (st.dragMoved) return; self._togglePair(emp.pk); self._draw(); });
+        g.addEventListener("click", function () {
+          if (st.dragMoved) return;
+          if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
+          else { self._togglePair(emp.pk); self._draw(); }
+        });
         st.chartRoot.appendChild(g);
       });
-      this._renderPanels();
+      if (st.mode === "simulate") this._renderSim(); else this._renderPanels();
     },
 
     _renderPanels: function () {
@@ -509,6 +634,126 @@
             '<div class="nx-collapse-body">' + skillsHtml + '</div>' +
           '</div>' +
         '</div>';
+    },
+
+    // ---- simulate mode (complementarity) -----------------------------------
+    _buildBehaviours: function () {
+      var st = this.state, order = { "Leadership": 0, "Agility": 1, "Cultural Fit": 2 };
+      var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; });
+      var seen = {}, list = [];
+      roleEmps.forEach(function (e) {
+        (e.subcompetencies || []).forEach(function (s) {
+          var nm = s && s.name != null ? String(s.name) : null; if (!nm || seen[nm]) return;
+          seen[nm] = 1; list.push({ name: nm, quad: (s.quadrant || s.parent || "") });
+        });
+      });
+      list.sort(function (a, b) {
+        var qa = (a.quad in order) ? order[a.quad] : 9, qb = (b.quad in order) ? order[b.quad] : 9;
+        return qa !== qb ? qa - qb : a.name.localeCompare(b.name);
+      });
+      st.behaviours = list.map(function (b, i) { return { id: "sb" + i, name: b.name, quad: b.quad, w: 1 }; });
+    },
+    _simFocusEmp: function () { return this.state.byPair[this.state.simFocus] || null; },
+    _simComplementEmps: function () {
+      var st = this.state;
+      return Object.keys(st.simComplements)
+        .filter(function (pk) { return st.simComplements[pk] && pk !== st.simFocus && st.byPair[pk]; })
+        .map(function (pk) { return st.byPair[pk]; });
+    },
+    _toggleComplement: function (pk) {
+      var st = this.state; if (pk === st.simFocus) return;
+      st.simComplements[pk] = !st.simComplements[pk];
+    },
+    _bestPartner: function (bname) {
+      var sel = this._simComplementEmps(); if (!sel.length) return null;
+      return Math.max.apply(null, sel.map(function (p) { return p.beh[bname] || 0; }));
+    },
+    _wavg: function (fn) { var bs = this.state.behaviours, s = 0, w = 0; bs.forEach(function (b) { s += b.w * fn(b); w += b.w; }); return w ? s / w : 0; },
+    _simSolo: function () { var f = this._simFocusEmp(); return this._wavg(function (b) { return f.beh[b.name] || 0; }); },
+    _simTeamValue: function (bname) {
+      var f = this._simFocusEmp(), bp = this._bestPartner(bname), cv = f.beh[bname] || 0;
+      return bp == null ? cv : Math.max(cv, bp);   // ceiling: lean on whoever is strongest
+    },
+    _simHeadline: function () { var self = this; return this._wavg(function (b) { return self._simTeamValue(b.name); }); },
+    _simDelta: function (bname) { var f = this._simFocusEmp(), bp = this._bestPartner(bname); return bp == null ? null : bp - (f.beh[bname] || 0); },
+    _simGapFit: function (emp) {
+      var st = this.state, f = this._simFocusEmp(), s = 0;
+      st.behaviours.forEach(function (b) { if (st.simWeak[b.id]) s += b.w * Math.max(0, (emp.beh[b.name] || 0) - (f.beh[b.name] || 0)); });
+      return s;
+    },
+    _simRanked: function () {
+      var self = this, st = this.state;
+      return st.employees.filter(function (e) { return e.roleId === st.chartRole && e.pk !== st.simFocus; })
+        .map(function (e) { return { e: e, gf: self._simGapFit(e) }; })
+        .sort(function (a, b) { return b.gf - a.gf; });
+    },
+    _defaultWeak: function () {
+      var st = this.state, f = this._simFocusEmp(); st.simWeak = {};
+      if (!f) return;
+      st.behaviours.slice().sort(function (a, b) { return (f.beh[a.name] || 0) - (f.beh[b.name] || 0); })
+        .slice(0, 3).forEach(function (b) { st.simWeak[b.id] = true; });
+    },
+    _simBar: function (v) { return '<span class="cx-barcell"><span class="cx-mini"><i style="width:' + v + '%;background:' + this._color(v) + '"></i></span>' + Math.round(v) + '</span>'; },
+
+    _renderSim: function () {
+      var self = this, st = this.state, panel = this.$.panel;
+      var f = this._simFocusEmp();
+      if (!f || !st.behaviours.length) {
+        panel.innerHTML = '<div class="nx-empty"><p>No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.</p></div>';
+        return;
+      }
+      var rank = this._simRanked();
+      var recIds = {}; rank.filter(function (r) { return r.gf > 0; }).slice(0, 2).forEach(function (r) { recIds[r.e.pk] = true; });
+      var comps = this._simComplementEmps();
+      var first = f.name.split(/\s+/)[0];
+      var solV = this._simSolo(), teamV = this._simHeadline(), lift = teamV - solV;
+      var liftTxt = (lift >= 0 ? "+" : "") + Math.round(lift) + "%";
+      var reading = comps.length
+        ? ("Partners can coach " + esc(first) + " on the green behaviours where they rank higher.")
+        : "Click bubbles above, or a suggestion below, to add complements.";
+
+      var html = '<div class="cx-shell"><div class="cx-cards">';
+      html += '<div class="cx-card cx-focus"><div class="cx-eyebrow">Successor candidate</div>' +
+        '<div class="cx-nm">' + esc(f.name) + '</div><div class="cx-ttl">' + esc(f.jobTitle || f.company || "") + '</div>' +
+        '<div class="cx-meta">Role fit <b>' + Math.round(f.roleFit) + '%</b></div>' +
+        '<div class="cx-fh"><div class="cx-row"><span class="cx-solo">Solo ' + Math.round(solV) + '%</span><span class="cx-arrow">&rarr;</span>' +
+        '<span class="cx-team">' + Math.round(teamV) + '%</span><span class="cx-lift ' + (lift > 0.5 ? "cx-pos" : "") + '">' + liftTxt + '</span></div>' +
+        '<div class="cx-cap">Combined behaviour profile</div><div class="cx-reading">' + reading + '</div></div></div>';
+      comps.forEach(function (p) {
+        var ov = self._wavg(function (b) { return p.beh[b.name] || 0; });
+        html += '<div class="cx-card cx-on"><button class="cx-remove" data-pk="' + esc(p.pk) + '" title="Remove complement">&times;</button>' +
+          (recIds[p.pk] ? '<div class="cx-rec">Recommended</div>' : '') +
+          '<div class="cx-eyebrow">Complement</div><div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
+          '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b></div>' +
+          '<div class="cx-gapfit">Covers selected gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
+      });
+      html += '</div>';
+
+      var sugg = rank.filter(function (r) { return r.gf > 0 && !st.simComplements[r.e.pk]; }).slice(0, 3);
+      if (sugg.length) {
+        html += '<div class="cx-suggest"><span class="cx-suggest-lbl">Suggested for the checked gaps</span>' +
+          sugg.map(function (r) { return '<button class="cx-sugg" data-pk="' + esc(r.e.pk) + '">' + esc(r.e.name) + ' <span class="cx-sugg-gf">+' + Math.round(r.gf) + '</span></button>'; }).join("") +
+          '</div>';
+      }
+
+      var thead = '<tr><th>Behaviour</th><th class="cx-num">' + esc(first) + '</th>';
+      comps.forEach(function (p) { thead += '<th class="cx-num">' + esc(p.name.split(/\s+/)[0]) + '</th>'; });
+      thead += '<th class="cx-num">Effective</th><th class="cx-num">&Delta;</th></tr>';
+      var body = '';
+      st.behaviours.forEach(function (b) {
+        var isWeak = !!st.simWeak[b.id], cv = f.beh[b.name] || 0, tv = self._simTeamValue(b.name), d = self._simDelta(b.name);
+        body += '<tr class="' + (isWeak ? 'cx-weakrow' : '') + '"><td class="cx-beh"><label class="cx-chk"><input type="checkbox" data-sbeh="' + b.id + '"' + (isWeak ? ' checked' : '') + '>' + esc(b.name) + '</label>' + (b.quad ? '<span class="cx-qtag">' + esc(b.quad) + '</span>' : '') + '</td>';
+        body += '<td class="cx-num">' + self._simBar(cv) + '</td>';
+        comps.forEach(function (p) { body += '<td class="cx-num">' + self._simBar(p.beh[b.name] || 0) + '</td>'; });
+        body += '<td class="cx-num">' + self._simBar(tv) + '</td>';
+        body += d == null ? '<td class="cx-num"><span class="cx-chip cx-z">&mdash;</span></td>'
+          : '<td class="cx-num"><span class="cx-chip ' + (d > 0 ? 'cx-p' : d < 0 ? 'cx-n' : 'cx-z') + '">' + (d > 0 ? '+' : '') + Math.round(d) + '</span></td>';
+        body += '</tr>';
+      });
+      html += '<div class="cx-tblwrap"><table><thead>' + thead + '</thead><tbody>' + body + '</tbody></table></div>';
+      html += '<p class="cx-footnote">Bar = the candidate&#39;s own score per behaviour. <b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. Suggestions rank by coverage of the <b>checked</b> behaviours.</p>';
+      html += '</div>';
+      panel.innerHTML = html;
     }
   });
 })();
