@@ -110,6 +110,13 @@
           .to-impact-sev { font-weight:700; font-size:11px; margin-bottom:5px; letter-spacing:0.4px; }
           .to-impact-row { display:flex; justify-content:space-between; font-size:11px; padding:1px 0; color:rgba(255,255,255,0.8); }
           .to-impact-row b { color:#fff; }
+          .to-rec-item { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid rgba(255,255,255,0.08); }
+          .to-rec-item:last-child { border-bottom:none; }
+          .to-rec-rank { width:16px; height:16px; border-radius:50%; background:rgba(255,255,255,0.15); color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+          .to-rec-av { width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,0.12); color:#fff; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
+          .to-rec-name { flex:1 1 auto; font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-rec-score { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+          .to-rec-score b { font-size:11px; color:#fff; }
           .to-act-foot { margin-top:8px; padding-top:6px; border-top:1px solid rgba(255,255,255,0.12); text-align:right; }
           .to-act-link { background:none; border:none; color:#7fb3ff; cursor:pointer; font-size:11px; padding:0; }
           .to-arrow { font-weight:700; }
@@ -277,7 +284,13 @@
           org_health_index:           pick(row, 'org_health_index') ?? 'N/A',
           successors_count:           toNum(pick(row, 'successors_count_value') ?? pick(row, 'successors_count')),
           bench_strength_target:      toNum(pick(row, 'bench_strength_target')  ?? pick(row, 'bench_strength')),
-          successor_names:            pick(row, 'successor_names') ?? null
+          successor_names:            pick(row, 'successor_names') ?? null,
+          candidate_role_fit_scores:  (() => {
+            const raw = pick(row, 'candidate_role_fit_scores');
+            if (raw == null || raw === '') return [];
+            if (Array.isArray(raw)) return raw;
+            try { return JSON.parse(raw); } catch (e) { return []; }
+          })()
         }));
 
         if (!nodes.length) { done(); return; }
@@ -618,8 +631,6 @@
         function showActionPopover(event, d) {
           const data   = d.data;
           const hasRaw = data.successors_count != null && data.bench_strength_target != null && data.bench_strength_target > 0;
-          const directReports = d.children ? d.children.length : 0;
-          const blast  = d.descendants().length - 1;
 
           const render = () => {
             data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
@@ -627,10 +638,12 @@
             const changed   = data._simBand !== data._baselineBand;
             const bandColor = data._vacant ? '#e74c3c' : (BENCH_RISK_COLORS[data._simBand] || BENCH_RISK_COLORS['N/A']);
             const baseColor = BENCH_RISK_COLORS[data._baselineBand] || BENCH_RISK_COLORS['N/A'];
-            const hasBackup = (data._simSuccessors || 0) > 0;
-            const severity  = isMCP && !hasBackup ? 'CRITICAL' : (!hasBackup ? 'HIGH IMPACT' : 'MODERATE');
-            const sevColor  = severity === 'CRITICAL' ? '#e74c3c' : severity === 'HIGH IMPACT' ? '#e67e22' : '#f1c40f';
             const initials  = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
+            // Top-3 recommended successors to fill this vacancy: non-successor employees
+            // scored against this role, best fit first (from candidate_role_fit_scores).
+            const candidates    = Array.isArray(data.candidate_role_fit_scores) ? data.candidate_role_fit_scores : [];
+            const topCandidates = candidates.slice(0, 3);
+            const recColor      = topCandidates.length ? '#27ae60' : '#e74c3c';
 
             self._action.innerHTML = `
               <div class="to-tt-header">
@@ -667,11 +680,25 @@
                 <button class="to-act-btn ${data._vacant ? 'danger' : ''}" data-act="depart" style="width:100%;">${data._vacant ? '↩ Cancel departure' : '⚠ Simulate departure'}</button>
               </div>
               ${data._vacant ? `
-              <div class="to-impact" style="border-color:${sevColor};">
-                <div class="to-impact-sev" style="color:${sevColor};">${severity}</div>
-                <div class="to-impact-row"><span>Direct reports orphaned</span><b>${directReports}</b></div>
-                <div class="to-impact-row"><span>People below affected</span><b>${blast}</b></div>
-                <div class="to-impact-row"><span>Ready backup?</span><b style="color:${hasBackup ? '#27ae60' : '#e74c3c'}">${hasBackup ? 'Yes (' + data._simSuccessors + ')' : 'None'}</b></div>
+              <div class="to-impact" style="border-color:${recColor};">
+                <div class="to-impact-sev" style="color:${recColor};">RECOMMENDED SUCCESSORS</div>
+                ${topCandidates.length ? topCandidates.map((c, i) => {
+                  const nm    = c.candidate_name || '—';
+                  const raw   = c.role_fit_score;
+                  const scNum = (raw != null && isFinite(Number(raw))) ? Number(raw) : null;
+                  const pct   = scNum != null ? Math.min(100, Math.max(0, Math.round(scNum))) : 0;
+                  const ci    = nm.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                  return `
+                    <div class="to-rec-item">
+                      <span class="to-rec-rank">${i + 1}</span>
+                      <span class="to-rec-av">${ci}</span>
+                      <span class="to-rec-name" title="${nm}">${nm}</span>
+                      <span class="to-rec-score">
+                        <span class="to-score-wrap" style="width:48px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${recColor};display:block;"></span></span>
+                        <b>${scNum != null ? scNum : '—'}</b>
+                      </span>
+                    </div>`;
+                }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No suitable candidates found for this role.</div>`}
               </div>` : ''}
               <div class="to-act-foot"><button class="to-act-link" data-act="reset">Reset this role</button></div>`;
 
