@@ -505,17 +505,20 @@
       var self = this, st = this.state, svg = this.$.svg;
       while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-      // one bubble per employee assessed against the selected chart role
-      var chartRole = st.chartRole;
-      var list = st.employees.filter(function (e) { return e.roleId === chartRole; })
-                             .sort(function (a, b) { return b.roleFit - a.roleFit; });
-      var notAssessed = st.userIds.length - list.length;
-      if (st.mode === "simulate") {
+      // Compare mode plots every (employee × role) row the Looker filter delivered — so with
+      // no target-role filter you see everyone, and selecting role(s) subsets the chart.
+      // Simulate mode scopes to a single role's population (candidate-as-bar).
+      var sim = st.mode === "simulate";
+      var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
+                   .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      if (sim) {
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
+      } else if (st.rolesInView.length > 1) {
+        this.$.count.textContent = list.length + " assessments · " + st.userIds.length + " employees · " + st.rolesInView.length + " roles" +
+          (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
       } else {
         this.$.count.textContent = list.length + " employees" +
-          (notAssessed > 0 ? " · " + notAssessed + " not assessed for this role" : "") +
           (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
       }
 
@@ -540,7 +543,7 @@
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
-        var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + Math.round(emp.roleFit) + "% role fit"; g.appendChild(ti);
+        var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit"; g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
           if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
