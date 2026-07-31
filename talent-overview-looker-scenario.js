@@ -332,6 +332,9 @@
         // Distinct fill for a vacated role once a successor has been chosen to backfill it.
         const FILLED_FILL   = '#3f8cff';
         const FILLED_STROKE = '#1c5fb0';
+        // Distinct fill for a vacancy resolved by a planned external hire (no internal bench).
+        const NEWHIRE_FILL   = '#1abc9c';
+        const NEWHIRE_STROKE = '#0e8c74';
 
         // keep the simulation view across Looker re-renders (resize / cross-filter)
         if (!this._scenarioMode) this._colorMode = config.color_mode || 'org_health';
@@ -357,7 +360,7 @@
           if (n.talent_role_id === '__root__') {
             n._benchTarget = null; n._baselineTarget = null; n._baselineBand = 'N/A'; n._baselineSuccessors = 0;
             n._simSuccessors = 0; n._vacant = false; n._simBand = 'N/A';
-            n._filledBy = null; n._backfill = false;
+            n._filledBy = null; n._backfill = false; n._newHire = false;
             return;
           }
           const baseTarget = (n.bench_strength_target != null && n.bench_strength_target > 0)
@@ -377,11 +380,13 @@
           n._vacant        = ov ? !!ov.vacant : false;
           n._filledBy      = (ov && ov.filledBy) ? ov.filledBy : null;
           n._backfill      = ov ? !!ov.backfill : false;
+          n._newHire       = ov ? !!ov.newHire : false;
           n._simBand       = computeBenchRisk(n._simSuccessors, n._benchTarget);
         });
 
         const nodeColor = d => {
           if (this._scenarioMode) {
+            if (d.data._newHire)  return NEWHIRE_FILL;
             if (d.data._filledBy) return FILLED_FILL;
             if (d.data._vacant)   return '#ffffff';
             return BENCH_RISK_COLORS[d.data._simBand] || BENCH_RISK_COLORS['N/A'];
@@ -453,8 +458,9 @@
           const goodDown = { 'Low Risk': false, 'Mid Risk': true, 'High Risk': true, 'N/A': true };
           const hrMcpBase = rn.filter(n => isTruthy(n.is_mission_critical_position) && n._baselineBand === 'High Risk').length;
           const hrMcpScen = rn.filter(n => isTruthy(n.is_mission_critical_position) && n._simBand === 'High Risk').length;
-          const filledCount = rn.filter(n => n._filledBy).length;
-          const gaps = rn.filter(n => n._vacant && !n._filledBy).length;
+          const filledCount  = rn.filter(n => n._filledBy).length;
+          const newHireCount = rn.filter(n => n._newHire).length;
+          const gaps = rn.filter(n => n._vacant && !n._filledBy && !n._newHire).length;
 
           el.innerHTML = `
             <div class="to-summary-title">Scenario vs Baseline</div>
@@ -467,6 +473,7 @@
             <div class="to-summary-section">
               <div class="to-summary-dot-row"><span class="to-summary-label">High-risk MCPs</span><span class="to-summary-value">${hrMcpBase} → ${arrow(hrMcpBase, hrMcpScen, true)}</span></div>
               <div class="to-summary-dot-row"><span class="to-summary-label">Positions filled</span><span class="to-summary-value">${filledCount}</span></div>
+              <div class="to-summary-dot-row"><span class="to-summary-label">External hires</span><span class="to-summary-value">${newHireCount}</span></div>
               <div class="to-summary-dot-row"><span class="to-summary-label">Manager gaps</span><span class="to-summary-value">${gaps}</span></div>
             </div>
             <div class="to-summary-section" style="color:#888;font-size:10px;">Simulate a departure, then click a successor to backfill the role.</div>`;
@@ -609,7 +616,7 @@
         const orphanIds = () => {
           const s = new Set();
           root.descendants().forEach(v => {
-            if (v.data._backfill && !v.data._filledBy) {
+            if (v.data._backfill && !v.data._filledBy && !v.data._newHire) {
               v.descendants().forEach(n => { if (n !== v) s.add(n.data.talent_role_id); });
             }
           });
@@ -620,9 +627,9 @@
           const orph = orphanIds();
           nodeG.selectAll('circle:not(.to-node-circle)')
             .attr('fill',             d => nodeColor(d))
-            .attr('stroke',           d => d.data._filledBy ? FILLED_STROKE : (d.data._vacant ? '#e74c3c' : '#fff'))
-            .attr('stroke-dasharray', d => (d.data._vacant && !d.data._filledBy) ? '2.5,2' : null)
-            .attr('stroke-width',     d => (d.data._vacant || d.data._filledBy) ? 2 : (d.depth === 0 ? 3 : 1.5));
+            .attr('stroke',           d => d.data._newHire ? NEWHIRE_STROKE : (d.data._filledBy ? FILLED_STROKE : (d.data._vacant ? '#e74c3c' : '#fff')))
+            .attr('stroke-dasharray', d => (d.data._vacant && !d.data._filledBy && !d.data._newHire) ? '2.5,2' : null)
+            .attr('stroke-width',     d => (d.data._vacant || d.data._filledBy || d.data._newHire) ? 2 : (d.depth === 0 ? 3 : 1.5));
           nodeG.style('opacity', d => orph.has(d.data.talent_role_id) ? 0.4 : 1);
           linkPaths
             .attr('stroke',         d => orph.has(d.target.data.talent_role_id) ? '#e74c3c' : '#ccc')
@@ -641,7 +648,7 @@
 
         const persistRole = d => self._scenario.set(d.data.talent_role_id, {
           simSuccessors: d.data._simSuccessors, simTarget: d.data._benchTarget, vacant: d.data._vacant,
-          filledBy: d.data._filledBy, backfill: d.data._backfill
+          filledBy: d.data._filledBy, backfill: d.data._backfill, newHire: d.data._newHire
         });
 
         // ── Successor backfill cascade ─────────────────────────────
@@ -654,6 +661,7 @@
           const uid   = (succ.user_id == null || succ.user_id === '') ? null : String(succ.user_id);
           dData._vacant   = true;
           dData._backfill = false;   // this role now has a replacement — not a gap
+          dData._newHire  = false;   // resolved internally, not by an external hire
           dData._filledBy = { name: succ.name, user_id: uid, role_fit_score: succ.role_fit_score };
           persistRole(departedNode);
           if (uid != null) {
@@ -679,6 +687,7 @@
             if (String(v.data.user_id) === uid && v.data._backfill && !v.data._filledBy) {
               v.data._vacant   = false;
               v.data._backfill = false;
+              v.data._newHire  = false;
               v.data._simBand  = computeBenchRisk(v.data._simSuccessors, v.data._benchTarget);
               self._scenario.delete(v.data.talent_role_id);
             }
@@ -717,6 +726,11 @@
             })).slice(0, 5);
             const recColor  = succList.length ? '#27ae60' : '#e74c3c';
             const listTitle = usingOwn ? 'SUCCESSORS' : 'RECOMMENDED SUCCESSORS';
+            // No internal bench at all — the role can only be filled by an external hire.
+            // Tone/severity keys off mission-criticality (our proxy for cost & urgency).
+            const hireMsg = isMCP
+              ? '⚠ No bench for this mission-critical role. An external hire is required — the seat stays exposed until filled.'
+              : 'No internal successors. This role can be backfilled with an external hire — low disruption.';
 
             self._action.innerHTML = `
               <div class="to-tt-header">
@@ -729,10 +743,11 @@
               <div style="padding-top:6px;">
                 <button class="to-act-btn ${data._vacant ? 'danger' : ''}" data-act="depart" style="width:100%;">${data._vacant ? '↩ Cancel departure' : '⚠ Simulate departure'}</button>
               </div>
-              ${data._vacant ? `
+              ${data._vacant ? (succList.length ? `
               <div class="to-impact" style="border-color:${recColor};">
                 <div class="to-impact-sev" style="color:${recColor};">${listTitle}</div>
-                ${succList.length ? `<div class="to-act-note" style="padding:0 0 4px;">Click a successor to backfill this role.</div>` + succList.map((c, i) => {
+                <div class="to-act-note" style="padding:0 0 4px;">Click a successor to backfill this role.</div>
+                ${succList.map((c, i) => {
                   const nm    = c.name || '—';
                   const scNum = (c.score != null && isFinite(Number(c.score))) ? Number(c.score) : null;
                   const pct   = scNum != null ? Math.min(100, Math.max(0, Math.round(scNum))) : 0;
@@ -748,22 +763,31 @@
                         <b>${scNum != null ? scNum : '—'}</b>
                       </span>
                     </div>`;
-                }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No suitable candidates found for this role.</div>`}
-              </div>` : ''}`;
+                }).join('')}
+              </div>` : `
+              <div class="to-impact" style="border-color:${data._newHire ? NEWHIRE_FILL : (isMCP ? '#e74c3c' : 'rgba(255,255,255,0.28)')};">
+                <div class="to-impact-sev" style="color:${data._newHire ? NEWHIRE_FILL : (isMCP ? '#e74c3c' : 'rgba(255,255,255,0.75)')};">${data._newHire ? 'NEW HIRE PLANNED' : 'NO INTERNAL CANDIDATES'}</div>
+                <div class="to-impact-row" style="display:block;line-height:1.45;color:${data._newHire ? 'rgba(255,255,255,0.8)' : (isMCP ? '#ffb4ab' : 'rgba(255,255,255,0.7)')};">${data._newHire ? 'This seat is planned to be filled by an external hire.' : hireMsg}</div>
+                <div style="padding-top:8px;">
+                  <button class="to-act-btn" data-act="hire" style="width:100%;${data._newHire ? `background:${NEWHIRE_FILL};border-color:${NEWHIRE_FILL};` : ''}">${data._newHire ? '↩ Cancel new hire' : '＋ Backfill with new hire'}</button>
+                </div>
+              </div>`) : ''}`;
 
             self._action.querySelectorAll('[data-act]').forEach(btn => {
               btn.onclick = () => {
                 const act = btn.getAttribute('data-act');
                 if (act === 'depart') {
                   data._vacant = !data._vacant;
-                  // Cancelling a departure clears any backfill/fill it took part in.
+                  // Cancelling a departure clears any backfill/fill/hire it took part in.
                   if (!data._vacant) {
                     if (data._filledBy) { const prev = data._filledBy; data._filledBy = null; revertBackfill(prev); }
                     data._backfill = false;
+                    data._newHire  = false;
                   }
                 }
+                if (act === 'hire') data._newHire = !data._newHire;
                 data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
-                if (!data._vacant && !data._filledBy && !data._backfill) {
+                if (!data._vacant && !data._filledBy && !data._backfill && !data._newHire) {
                   self._scenario.delete(data.talent_role_id);
                 } else {
                   persistRole(d);
@@ -849,6 +873,7 @@
             n._vacant   = false;
             n._backfill = false;
             n._filledBy = null;
+            n._newHire  = false;
             n._simBand  = n._baselineBand;
           });
           self._action.classList.remove('visible');
