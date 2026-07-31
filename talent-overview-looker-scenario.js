@@ -95,17 +95,10 @@
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
-          .to-act-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:5px 0; }
-          .to-stepper { display:flex; align-items:center; gap:6px; }
-          .to-step-btn { width:22px; height:22px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; font-size:14px; line-height:1; }
-          .to-step-btn:hover { background:rgba(255,255,255,0.2); }
-          .to-step-val { min-width:16px; text-align:center; font-size:13px; }
-          .to-step-target { color:rgba(255,255,255,0.5); font-size:11px; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
           .to-act-btn:hover { background:rgba(255,255,255,0.2); }
           .to-act-btn.danger { background:#e74c3c; border-color:#e74c3c; }
           .to-act-note { color:rgba(255,255,255,0.6); font-size:11px; padding:5px 0; }
-          .to-delta-tag { color:rgba(255,255,255,0.5); font-size:10px; margin-left:5px; }
           .to-impact { margin-top:8px; padding:8px 10px; border:1px solid; border-radius:5px; background:rgba(255,255,255,0.04); }
           .to-impact-sev { font-weight:700; font-size:11px; margin-bottom:5px; letter-spacing:0.4px; }
           .to-impact-row { display:flex; justify-content:space-between; font-size:11px; padding:1px 0; color:rgba(255,255,255,0.8); }
@@ -117,8 +110,9 @@
           .to-rec-name { flex:1 1 auto; font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-rec-score { display:flex; align-items:center; gap:6px; flex-shrink:0; }
           .to-rec-score b { font-size:11px; color:#fff; }
-          .to-act-foot { margin-top:8px; padding-top:6px; border-top:1px solid rgba(255,255,255,0.12); text-align:right; }
-          .to-act-link { background:none; border:none; color:#7fb3ff; cursor:pointer; font-size:11px; padding:0; }
+          .to-rec-pick { cursor:pointer; border-radius:4px; padding-left:3px; padding-right:3px; transition:background 0.12s ease; }
+          .to-rec-pick:hover { background:rgba(255,255,255,0.10); }
+          .to-rec-pick.chosen { background:rgba(63,140,255,0.22); }
           .to-arrow { font-weight:700; }
           .to-arrow.good { color:#27ae60; }
           .to-arrow.bad { color:#e74c3c; }
@@ -272,6 +266,7 @@
         const nodes = data.map(row => ({
           talent_role_id:             String(pick(row, 'talent_role_id') ?? ''),
           parent_talent_role_id:      (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'parent_talent_role_id')),
+          user_id:                    (v => (v != null && v !== '' && v !== 'null') ? String(v) : null)(pick(row, 'user_id')),
           employee_name:              pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
@@ -285,6 +280,12 @@
           successors_count:           toNum(pick(row, 'successors_count_value') ?? pick(row, 'successors_count')),
           bench_strength_target:      toNum(pick(row, 'bench_strength_target')  ?? pick(row, 'bench_strength')),
           successor_names:            pick(row, 'successor_names') ?? null,
+          successor_role_fit_scores:  (() => {
+            const raw = pick(row, 'successor_role_fit_scores');
+            if (raw == null || raw === '') return [];
+            if (Array.isArray(raw)) return raw;
+            try { return JSON.parse(raw); } catch (e) { return []; }
+          })(),
           candidate_role_fit_scores:  (() => {
             const raw = pick(row, 'candidate_role_fit_scores');
             if (raw == null || raw === '') return [];
@@ -307,10 +308,11 @@
         const roots = nodes.filter(n => !n.parent_talent_role_id);
         if (roots.length > 1) {
           nodes.unshift({
-            talent_role_id: '__root__', parent_talent_role_id: null,
+            talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
             employee_name: '', talent_role_name: '', parent_talent_role_name: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
-            is_mission_critical_position: false, is_talent: false, role_fit_score: null
+            is_mission_critical_position: false, is_talent: false, role_fit_score: null,
+            successor_role_fit_scores: [], candidate_role_fit_scores: []
           });
           roots.forEach(n => { n.parent_talent_role_id = '__root__'; });
         }
@@ -327,6 +329,9 @@
           'High Risk': config.color_low    || '#e74c3c',
           'N/A':       config.color_na     || '#95a5a6'
         };
+        // Distinct fill for a vacated role once a successor has been chosen to backfill it.
+        const FILLED_FILL   = '#3f8cff';
+        const FILLED_STROKE = '#1c5fb0';
 
         // keep the simulation view across Looker re-renders (resize / cross-filter)
         if (!this._scenarioMode) this._colorMode = config.color_mode || 'org_health';
@@ -352,6 +357,7 @@
           if (n.talent_role_id === '__root__') {
             n._benchTarget = null; n._baselineTarget = null; n._baselineBand = 'N/A'; n._baselineSuccessors = 0;
             n._simSuccessors = 0; n._vacant = false; n._simBand = 'N/A';
+            n._filledBy = null; n._backfill = false;
             return;
           }
           const baseTarget = (n.bench_strength_target != null && n.bench_strength_target > 0)
@@ -369,12 +375,15 @@
           n._simSuccessors = ov ? ov.simSuccessors : n._baselineSuccessors;
           n._benchTarget   = (ov && ov.simTarget != null) ? ov.simTarget : baseTarget;
           n._vacant        = ov ? !!ov.vacant : false;
+          n._filledBy      = (ov && ov.filledBy) ? ov.filledBy : null;
+          n._backfill      = ov ? !!ov.backfill : false;
           n._simBand       = computeBenchRisk(n._simSuccessors, n._benchTarget);
         });
 
         const nodeColor = d => {
           if (this._scenarioMode) {
-            if (d.data._vacant) return '#ffffff';
+            if (d.data._filledBy) return FILLED_FILL;
+            if (d.data._vacant)   return '#ffffff';
             return BENCH_RISK_COLORS[d.data._simBand] || BENCH_RISK_COLORS['N/A'];
           }
           if (this._colorMode === 'bench_risk') {
@@ -444,7 +453,8 @@
           const goodDown = { 'Low Risk': false, 'Mid Risk': true, 'High Risk': true, 'N/A': true };
           const hrMcpBase = rn.filter(n => isTruthy(n.is_mission_critical_position) && n._baselineBand === 'High Risk').length;
           const hrMcpScen = rn.filter(n => isTruthy(n.is_mission_critical_position) && n._simBand === 'High Risk').length;
-          const gaps = rn.filter(n => n._vacant).length;
+          const filledCount = rn.filter(n => n._filledBy).length;
+          const gaps = rn.filter(n => n._vacant && !n._filledBy).length;
 
           el.innerHTML = `
             <div class="to-summary-title">Scenario vs Baseline</div>
@@ -456,9 +466,10 @@
               </div>`).join('')}
             <div class="to-summary-section">
               <div class="to-summary-dot-row"><span class="to-summary-label">High-risk MCPs</span><span class="to-summary-value">${hrMcpBase} → ${arrow(hrMcpBase, hrMcpScen, true)}</span></div>
+              <div class="to-summary-dot-row"><span class="to-summary-label">Positions filled</span><span class="to-summary-value">${filledCount}</span></div>
               <div class="to-summary-dot-row"><span class="to-summary-label">Manager gaps</span><span class="to-summary-value">${gaps}</span></div>
             </div>
-            <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to add successors or simulate a departure.</div>`;
+            <div class="to-summary-section" style="color:#888;font-size:10px;">Simulate a departure, then click a successor to backfill the role.</div>`;
         };
 
         // ── Build tree ─────────────────────────────────────────────
@@ -591,11 +602,16 @@
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
 
-        // Roles left without a manager because someone above them is vacant.
+        // Grayed reporting lines: only for a role vacated by *backfill* — i.e. its
+        // incumbent was moved up to fill another role and left a gap behind them.
+        // A plain simulated departure (or a role already backfilled by a successor)
+        // does NOT gray its subtree.
         const orphanIds = () => {
           const s = new Set();
           root.descendants().forEach(v => {
-            if (v.data._vacant) v.descendants().forEach(n => { if (n !== v) s.add(n.data.talent_role_id); });
+            if (v.data._backfill && !v.data._filledBy) {
+              v.descendants().forEach(n => { if (n !== v) s.add(n.data.talent_role_id); });
+            }
           });
           return s;
         };
@@ -604,9 +620,9 @@
           const orph = orphanIds();
           nodeG.selectAll('circle:not(.to-node-circle)')
             .attr('fill',             d => nodeColor(d))
-            .attr('stroke',           d => d.data._vacant ? '#e74c3c' : '#fff')
-            .attr('stroke-dasharray', d => d.data._vacant ? '2.5,2' : null)
-            .attr('stroke-width',     d => d.data._vacant ? 2 : (d.depth === 0 ? 3 : 1.5));
+            .attr('stroke',           d => d.data._filledBy ? FILLED_STROKE : (d.data._vacant ? '#e74c3c' : '#fff'))
+            .attr('stroke-dasharray', d => (d.data._vacant && !d.data._filledBy) ? '2.5,2' : null)
+            .attr('stroke-width',     d => (d.data._vacant || d.data._filledBy) ? 2 : (d.depth === 0 ? 3 : 1.5));
           nodeG.style('opacity', d => orph.has(d.data.talent_role_id) ? 0.4 : 1);
           linkPaths
             .attr('stroke',         d => orph.has(d.target.data.talent_role_id) ? '#e74c3c' : '#ccc')
@@ -624,26 +640,83 @@
         };
 
         const persistRole = d => self._scenario.set(d.data.talent_role_id, {
-          simSuccessors: d.data._simSuccessors, simTarget: d.data._benchTarget, vacant: d.data._vacant
+          simSuccessors: d.data._simSuccessors, simTarget: d.data._benchTarget, vacant: d.data._vacant,
+          filledBy: d.data._filledBy, backfill: d.data._backfill
         });
 
-        // Interactive action card: add/remove successors, or simulate a departure.
+        // ── Successor backfill cascade ─────────────────────────────
+        // Choosing a successor to fill a vacated role: the vacated node is marked
+        // "filled" (distinct color), and the chosen person's own role(s) elsewhere
+        // in the org are automatically simulated as departed (a backfill gap whose
+        // reporting line is grayed out).
+        const chooseSuccessor = (departedNode, succ) => {
+          const dData = departedNode.data;
+          const uid   = (succ.user_id == null || succ.user_id === '') ? null : String(succ.user_id);
+          dData._vacant   = true;
+          dData._backfill = false;   // this role now has a replacement — not a gap
+          dData._filledBy = { name: succ.name, user_id: uid, role_fit_score: succ.role_fit_score };
+          persistRole(departedNode);
+          if (uid != null) {
+            root.descendants().forEach(v => {
+              if (v.data.talent_role_id === '__root__' || v === departedNode) return;
+              if (String(v.data.user_id) === uid) {
+                v.data._vacant   = true;
+                v.data._backfill = true;
+                v.data._filledBy = null;
+                v.data._simBand  = computeBenchRisk(v.data._simSuccessors, v.data._benchTarget);
+                persistRole(v);
+              }
+            });
+          }
+        };
+
+        // Undo the backfill gap(s) created when `fill` was chosen for some role.
+        const revertBackfill = fill => {
+          if (!fill || fill.user_id == null || fill.user_id === '') return;
+          const uid = String(fill.user_id);
+          root.descendants().forEach(v => {
+            if (v.data.talent_role_id === '__root__') return;
+            if (String(v.data.user_id) === uid && v.data._backfill && !v.data._filledBy) {
+              v.data._vacant   = false;
+              v.data._backfill = false;
+              v.data._simBand  = computeBenchRisk(v.data._simSuccessors, v.data._benchTarget);
+              self._scenario.delete(v.data.talent_role_id);
+            }
+          });
+        };
+
+        // Cancel the fill on `departedNode`, reverting the successor's backfill gap.
+        const cancelFill = departedNode => {
+          const prev = departedNode.data._filledBy;
+          departedNode.data._filledBy = null;
+          persistRole(departedNode);
+          revertBackfill(prev);
+        };
+
+        // Interactive action card: simulate a departure, then pick a successor to backfill.
         function showActionPopover(event, d) {
           const data   = d.data;
-          const hasRaw = data.successors_count != null && data.bench_strength_target != null && data.bench_strength_target > 0;
 
           const render = () => {
             data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
             const isMCP     = isTruthy(data.is_mission_critical_position);
-            const changed   = data._simBand !== data._baselineBand;
-            const bandColor = data._vacant ? '#e74c3c' : (BENCH_RISK_COLORS[data._simBand] || BENCH_RISK_COLORS['N/A']);
             const baseColor = BENCH_RISK_COLORS[data._baselineBand] || BENCH_RISK_COLORS['N/A'];
             const initials  = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
-            // Top-3 recommended successors to fill this vacancy: non-successor employees
-            // scored against this role, best fit first (from candidate_role_fit_scores).
-            const candidates    = Array.isArray(data.candidate_role_fit_scores) ? data.candidate_role_fit_scores : [];
-            const topCandidates = candidates.slice(0, 3);
-            const recColor      = topCandidates.length ? '#27ae60' : '#e74c3c';
+            const esc       = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
+            // Who can fill this role if it is vacated:
+            //  1) the role's own designated successors (successor_role_fit_scores)
+            //  2) fallback — org-wide employees scored on this role, best fit first
+            //     (candidate_role_fit_scores) when the role has no successors.
+            const ownSucc = Array.isArray(data.successor_role_fit_scores)  ? data.successor_role_fit_scores  : [];
+            const orgCand = Array.isArray(data.candidate_role_fit_scores)  ? data.candidate_role_fit_scores  : [];
+            const usingOwn = ownSucc.length > 0;
+            const succList = (usingOwn ? ownSucc : orgCand).map(c => ({
+              name:  c.successor_name    ?? c.candidate_name    ?? '—',
+              uid:   c.successor_user_id ?? c.candidate_user_id ?? null,
+              score: c.role_fit_score
+            })).slice(0, 5);
+            const recColor  = succList.length ? '#27ae60' : '#e74c3c';
+            const listTitle = usingOwn ? 'SUCCESSORS' : 'RECOMMENDED SUCCESSORS';
 
             self._action.innerHTML = `
               <div class="to-tt-header">
@@ -653,71 +726,71 @@
                   <div class="to-tt-role">${data.talent_role_name || '—'}</div>
                 </div>
               </div>
-              <div class="to-act-row">
-                <span class="to-tt-label">Bench Risk</span>
-                <span><span class="to-tt-dot" style="background:${bandColor};display:inline-block;margin-right:5px;"></span><b style="color:${bandColor}">${data._vacant ? 'VACANT' : data._simBand}</b>${(changed && !data._vacant) ? `<span class="to-delta-tag">was ${data._baselineBand}</span>` : ''}</span>
-              </div>
-              ${hasRaw ? `
-              <div class="to-act-row">
-                <span class="to-tt-label">Successors</span>
-                <span class="to-stepper">
-                  <button class="to-step-btn" data-act="succ-">−</button>
-                  <span class="to-step-val">${data._simSuccessors}</span>
-                  <button class="to-step-btn" data-act="succ+">+</button>
-                </span>
-              </div>
-              <div class="to-act-row">
-                <span class="to-tt-label">Bench target</span>
-                <span class="to-stepper">
-                  <button class="to-step-btn" data-act="tgt-">−</button>
-                  <span class="to-step-val">${data._benchTarget}</span>
-                  <button class="to-step-btn" data-act="tgt+">+</button>
-                  ${data._benchTarget !== data._baselineTarget ? `<span class="to-delta-tag">was ${data._baselineTarget}</span>` : ''}
-                </span>
-              </div>
-              <div class="to-act-row" style="padding-top:0;"><span class="to-step-target">Needs ${data._benchTarget} successor${data._benchTarget === 1 ? '' : 's'}, has ${data._simSuccessors}</span></div>` : `<div class="to-act-note">Add <b>successors_count_value</b> &amp; <b>bench_strength_target</b> to the query to edit successors and bench target live.</div>`}
               <div style="padding-top:6px;">
                 <button class="to-act-btn ${data._vacant ? 'danger' : ''}" data-act="depart" style="width:100%;">${data._vacant ? '↩ Cancel departure' : '⚠ Simulate departure'}</button>
               </div>
               ${data._vacant ? `
               <div class="to-impact" style="border-color:${recColor};">
-                <div class="to-impact-sev" style="color:${recColor};">RECOMMENDED SUCCESSORS</div>
-                ${topCandidates.length ? topCandidates.map((c, i) => {
-                  const nm    = c.candidate_name || '—';
-                  const raw   = c.role_fit_score;
-                  const scNum = (raw != null && isFinite(Number(raw))) ? Number(raw) : null;
+                <div class="to-impact-sev" style="color:${recColor};">${listTitle}</div>
+                ${succList.length ? `<div class="to-act-note" style="padding:0 0 4px;">Click a successor to backfill this role.</div>` + succList.map((c, i) => {
+                  const nm    = c.name || '—';
+                  const scNum = (c.score != null && isFinite(Number(c.score))) ? Number(c.score) : null;
                   const pct   = scNum != null ? Math.min(100, Math.max(0, Math.round(scNum))) : 0;
                   const ci    = nm.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                  const chosen = data._filledBy && c.uid != null && String(data._filledBy.user_id) === String(c.uid);
                   return `
-                    <div class="to-rec-item">
+                    <div class="to-rec-item to-rec-pick${chosen ? ' chosen' : ''}" data-pick="1" data-uid="${esc(c.uid ?? '')}" data-name="${esc(nm)}" data-score="${scNum != null ? scNum : ''}">
                       <span class="to-rec-rank">${i + 1}</span>
                       <span class="to-rec-av">${ci}</span>
-                      <span class="to-rec-name" title="${nm}">${nm}</span>
+                      <span class="to-rec-name" title="${esc(nm)}">${nm}${chosen ? ' ✓' : ''}</span>
                       <span class="to-rec-score">
                         <span class="to-score-wrap" style="width:48px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${recColor};display:block;"></span></span>
                         <b>${scNum != null ? scNum : '—'}</b>
                       </span>
                     </div>`;
                 }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No suitable candidates found for this role.</div>`}
-              </div>` : ''}
-              <div class="to-act-foot"><button class="to-act-link" data-act="reset">Reset this role</button></div>`;
+              </div>` : ''}`;
 
             self._action.querySelectorAll('[data-act]').forEach(btn => {
               btn.onclick = () => {
                 const act = btn.getAttribute('data-act');
-                if (act === 'succ-') data._simSuccessors = Math.max(0, (data._simSuccessors || 0) - 1);
-                if (act === 'succ+') data._simSuccessors = (data._simSuccessors || 0) + 1;
-                if (act === 'tgt-')  data._benchTarget   = Math.max(1, (data._benchTarget || 1) - 1);
-                if (act === 'tgt+')  data._benchTarget   = (data._benchTarget || 0) + 1;
-                if (act === 'depart') data._vacant = !data._vacant;
-                if (act === 'reset') {
-                  data._simSuccessors = data._baselineSuccessors;
-                  data._benchTarget   = data._baselineTarget;
-                  data._vacant = false;
+                if (act === 'depart') {
+                  data._vacant = !data._vacant;
+                  // Cancelling a departure clears any backfill/fill it took part in.
+                  if (!data._vacant) {
+                    if (data._filledBy) { const prev = data._filledBy; data._filledBy = null; revertBackfill(prev); }
+                    data._backfill = false;
+                  }
+                }
+                data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
+                if (!data._vacant && !data._filledBy && !data._backfill) {
                   self._scenario.delete(data.talent_role_id);
                 } else {
-                  data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
                   persistRole(d);
+                }
+                paintScenario();
+                renderSummary();
+                render();
+              };
+            });
+
+            // Interactive successors: click to backfill this role with that person
+            // (or click the chosen one again to undo it).
+            self._action.querySelectorAll('[data-pick]').forEach(item => {
+              item.onclick = () => {
+                const uidAttr = item.getAttribute('data-uid');
+                const uid     = uidAttr === '' ? null : uidAttr;
+                const already = data._filledBy && uid != null && String(data._filledBy.user_id) === String(uid);
+                if (already) {
+                  cancelFill(d);
+                } else {
+                  if (data._filledBy) revertBackfill(data._filledBy);
+                  const scoreAttr = item.getAttribute('data-score');
+                  chooseSuccessor(d, {
+                    name:          item.getAttribute('data-name'),
+                    user_id:       uid,
+                    role_fit_score: scoreAttr === '' ? null : Number(scoreAttr)
+                  });
                 }
                 paintScenario();
                 renderSummary();
@@ -773,8 +846,10 @@
           nodes.forEach(n => {
             n._simSuccessors = n._baselineSuccessors;
             n._benchTarget   = n._baselineTarget;
-            n._vacant = false;
-            n._simBand = n._baselineBand;
+            n._vacant   = false;
+            n._backfill = false;
+            n._filledBy = null;
+            n._simBand  = n._baselineBand;
           });
           self._action.classList.remove('visible');
           paintScenario();
