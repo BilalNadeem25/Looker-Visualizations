@@ -139,6 +139,23 @@
           .to-ec-succ-item:last-child { border-bottom:none; }
           .to-ec-succ-av { width:24px; height:24px; border-radius:50%; background:#e8eaed; color:#667; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
           .to-ec-succ-empty { padding:12px 16px; color:#aaa; font-size:12px; }
+
+          /* ── Cascade / impact panel (left-docked, appears in Simulate when changes exist) ── */
+          .to-cascade { position:absolute; top:52px; left:10px; width:238px; max-height:calc(100% - 150px); background:rgba(255,255,255,0.97); border-radius:8px; box-shadow:0 2px 14px rgba(0,0,0,0.16); z-index:15; display:none; flex-direction:column; overflow:hidden; }
+          .to-cascade.visible { display:flex; }
+          .to-casc-head { padding:10px 13px; font-weight:700; font-size:12px; color:#222; border-bottom:1px solid #eee; flex-shrink:0; }
+          .to-casc-nav { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; border-bottom:1px solid #f0f0f0; font-size:11px; color:#e74c3c; font-weight:600; flex-shrink:0; }
+          .to-casc-navbtn { width:22px; height:22px; border:1px solid #f0c6c1; background:#fff; color:#e74c3c; border-radius:4px; cursor:pointer; font-size:12px; line-height:1; }
+          .to-casc-navbtn:hover { background:#fdecea; }
+          .to-casc-list { overflow-y:auto; padding:4px 0; }
+          .to-casc-row { display:flex; align-items:center; gap:9px; padding:7px 12px; cursor:pointer; border-bottom:1px solid #f5f5f5; }
+          .to-casc-row:hover { background:#f4f8ff; }
+          .to-casc-row:last-child { border-bottom:none; }
+          .to-casc-av { width:26px; height:26px; border-radius:50%; color:#fff; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
+          .to-casc-body { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+          .to-casc-role { font-size:12px; font-weight:600; color:#222; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-casc-who { font-size:11px; color:#888; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-casc-chip { font-size:9px; font-weight:700; letter-spacing:0.3px; border:1px solid; border-radius:10px; padding:2px 7px; flex-shrink:0; text-transform:uppercase; }
         `;
         element.appendChild(style);
 
@@ -204,13 +221,21 @@
         empcard.addEventListener('click', e => e.stopPropagation());
         element.appendChild(empcard);
 
+        const cascade = document.createElement('div');
+        cascade.className = 'to-cascade';
+        cascade.id = 'to-cascade';
+        cascade.addEventListener('click', e => e.stopPropagation());
+        element.appendChild(cascade);
+
         this._chart        = chart;
         this._tooltip      = tooltip;
         this._action       = action;
         this._empcard      = empcard;
+        this._cascade      = cascade;
         this._colorMode    = 'org_health';
         this._scenarioMode = false;
         this._scenario     = new Map();
+        this._gapIdx       = 0;
         this._svg          = null;
         this._nodeG        = null;
         this._zoom         = null;
@@ -664,6 +689,7 @@
           dData._newHire  = false;   // resolved internally, not by an external hire
           dData._filledBy = { name: succ.name, user_id: uid, role_fit_score: succ.role_fit_score };
           persistRole(departedNode);
+          const backfilled = [];
           if (uid != null) {
             root.descendants().forEach(v => {
               if (v.data.talent_role_id === '__root__' || v === departedNode) return;
@@ -673,9 +699,11 @@
                 v.data._filledBy = null;
                 v.data._simBand  = computeBenchRisk(v.data._simSuccessors, v.data._benchTarget);
                 persistRole(v);
+                backfilled.push(v);
               }
             });
           }
+          return backfilled;
         };
 
         // Undo the backfill gap(s) created when `fill` was chosen for some role.
@@ -700,6 +728,124 @@
           departedNode.data._filledBy = null;
           persistRole(departedNode);
           revertBackfill(prev);
+        };
+
+        // ── Locate-in-chart helpers (make the cascade navigable at any org size) ──
+        const escAttr  = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
+        const nodePos  = v => radialPoint(v.x, v.y);
+
+        // Animate the viewport to frame one or more nodes (fits their bounding box).
+        const flyToNodes = (targets, opts = {}) => {
+          const pts = (targets || []).filter(Boolean).map(nodePos);
+          if (!pts.length) return;
+          const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+          const minX = Math.min(...xs), maxX = Math.max(...xs);
+          const minY = Math.min(...ys), maxY = Math.max(...ys);
+          const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+          const pad  = 170;
+          let k;
+          if (pts.length === 1) {
+            k = 1.3;
+          } else {
+            k = Math.min((W - pad) / Math.max(1, maxX - minX), (H - pad) / Math.max(1, maxY - minY));
+            if (!isFinite(k) || k <= 0) k = 1;
+          }
+          k = Math.max(0.08, Math.min(2.2, k));
+          const t = d3.zoomIdentity.translate(W / 2 - midX * k, H / 2 - midY * k).scale(k);
+          svg.transition().duration(650).call(zoomBehavior.transform, t);
+          (opts.ping || []).forEach(pingNode);
+        };
+
+        // A brief expanding ring locator on a node (drawn in chart space so it pans/zooms).
+        const pingNode = v => {
+          const [x, y] = nodePos(v);
+          const r0 = (v.depth === 0 ? 9 : v.children ? 6 : 5);
+          const ring = () => g.append('circle')
+            .attr('cx', x).attr('cy', y).attr('r', r0 + 2)
+            .attr('fill', 'none').attr('stroke', '#e74c3c').attr('stroke-width', 3)
+            .attr('opacity', 0.9).style('pointer-events', 'none')
+            .transition().duration(850).ease(d3.easeCubicOut)
+            .attr('r', r0 + 26).attr('stroke-width', 0.5).attr('opacity', 0)
+            .on('end', function () { d3.select(this).remove(); });
+          ring();
+          setTimeout(ring, 260);
+        };
+
+        // ── Cascade / impact panel: a size-independent list of every touched role,
+        //    each click-to-locate, plus a next/prev navigator over the open gaps. ──
+        const cascadeState = v =>
+            v.data._filledBy ? { k: 'filled', label: 'Filled',   color: FILLED_FILL }
+          : v.data._newHire  ? { k: 'hire',   label: 'New hire',  color: NEWHIRE_FILL }
+          : v.data._backfill ? { k: 'gap',    label: 'Open gap',  color: '#e74c3c' }
+          :                    { k: 'depart', label: 'Departing', color: '#e74c3c' };
+
+        const openGapNodes = () => root.descendants().filter(v =>
+          v.data.talent_role_id !== '__root__' && v.data._vacant && !v.data._filledBy && !v.data._newHire);
+
+        const renderCascade = () => {
+          const el = document.getElementById('to-cascade');
+          if (!el) return;
+          if (!self._scenarioMode) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+          const affected = root.descendants().filter(v =>
+            v.data.talent_role_id !== '__root__' &&
+            (v.data._filledBy || v.data._newHire || v.data._vacant));
+          if (!affected.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+
+          const order = { depart: 0, gap: 1, hire: 2, filled: 3 };
+          affected.sort((a, b) => {
+            const oa = order[cascadeState(a).k], ob = order[cascadeState(b).k];
+            if (oa !== ob) return oa - ob;
+            return String(a.data.talent_role_name || '').localeCompare(String(b.data.talent_role_name || ''));
+          });
+
+          const gaps = openGapNodes();
+          const nav = gaps.length ? `
+            <div class="to-casc-nav">
+              <button class="to-casc-navbtn" data-nav="prev" title="Previous open gap">◂</button>
+              <span>${gaps.length} open gap${gaps.length === 1 ? '' : 's'} to resolve</span>
+              <button class="to-casc-navbtn" data-nav="next" title="Next open gap">▸</button>
+            </div>` : '';
+
+          el.innerHTML = `
+            <div class="to-casc-head">Scenario changes (${affected.length})</div>
+            ${nav}
+            <div class="to-casc-list">
+              ${affected.map(v => {
+                const st   = cascadeState(v);
+                const role = v.data.talent_role_name || '—';
+                const who  = st.k === 'filled' ? (v.data._filledBy.name || '—')
+                           : st.k === 'hire'   ? 'External hire'
+                           : (v.data.employee_name || '—');
+                const ci   = String(who).split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                return `
+                  <div class="to-casc-row" data-role="${escAttr(v.data.talent_role_id)}">
+                    <span class="to-casc-av" style="background:${st.color}">${ci}</span>
+                    <span class="to-casc-body">
+                      <span class="to-casc-role" title="${escAttr(role)}">${role}</span>
+                      <span class="to-casc-who" title="${escAttr(who)}">${who}</span>
+                    </span>
+                    <span class="to-casc-chip" style="color:${st.color};border-color:${st.color};">${st.label}</span>
+                  </div>`;
+              }).join('')}
+            </div>`;
+          el.classList.add('visible');
+
+          el.querySelectorAll('[data-role]').forEach(rowEl => {
+            rowEl.onclick = () => {
+              const id = rowEl.getAttribute('data-role');
+              const v  = root.descendants().find(n => String(n.data.talent_role_id) === String(id));
+              if (v) flyToNodes([v], { ping: [v] });
+            };
+          });
+          el.querySelectorAll('[data-nav]').forEach(btn => {
+            btn.onclick = () => {
+              const g2 = openGapNodes();
+              if (!g2.length) return;
+              const dir = btn.getAttribute('data-nav') === 'next' ? 1 : -1;
+              self._gapIdx = (((self._gapIdx || 0) + dir) % g2.length + g2.length) % g2.length;
+              flyToNodes([g2[self._gapIdx]], { ping: [g2[self._gapIdx]] });
+            };
+          });
         };
 
         // Interactive action card: simulate a departure, then pick a successor to backfill.
@@ -794,6 +940,7 @@
                 }
                 paintScenario();
                 renderSummary();
+                renderCascade();
                 render();
               };
             });
@@ -805,20 +952,24 @@
                 const uidAttr = item.getAttribute('data-uid');
                 const uid     = uidAttr === '' ? null : uidAttr;
                 const already = data._filledBy && uid != null && String(data._filledBy.user_id) === String(uid);
+                let backfilled = [];
                 if (already) {
                   cancelFill(d);
                 } else {
                   if (data._filledBy) revertBackfill(data._filledBy);
                   const scoreAttr = item.getAttribute('data-score');
-                  chooseSuccessor(d, {
+                  backfilled = chooseSuccessor(d, {
                     name:          item.getAttribute('data-name'),
                     user_id:       uid,
                     role_fit_score: scoreAttr === '' ? null : Number(scoreAttr)
-                  });
+                  }) || [];
                 }
                 paintScenario();
                 renderSummary();
+                renderCascade();
                 render();
+                // Locate the newly-vacated seat(s) so the user never has to hunt for them.
+                if (backfilled.length) flyToNodes([d, ...backfilled], { ping: backfilled });
               };
             });
           };
@@ -850,6 +1001,7 @@
           }
           renderColorLegend();
           renderSummary();
+          renderCascade();
         };
 
         btnScenario.onclick = () => {
@@ -877,8 +1029,10 @@
             n._simBand  = n._baselineBand;
           });
           self._action.classList.remove('visible');
+          self._gapIdx = 0;
           paintScenario();
           renderSummary();
+          renderCascade();
         };
 
         // Reflect the current mode after every (re-)render, and paint the summary.
