@@ -44,12 +44,13 @@
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
-  /* Chart keeps an EXPLICIT pixel height and stays pinned at the top, with or without a
-     selection (a % / flex-grow height collapses on Looker's first paint before the tile
-     has a resolved height). _sizeChart() overrides the height below from the tile's real
-     size once it resolves; this value only applies until then. The cards area below grows
-     as employees are added; the stage scrolls. */
-  .nx-chartwrap{flex:0 0 auto; height:560px; min-width:0; min-height:0; overflow:hidden; position:sticky; top:0; background:var(--panel); z-index:2; padding:6px}
+  /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
+     paint before the tile has a resolved height). _sizeChart() overrides the height below from
+     the tile's real size once it resolves; this value only applies until then. It scrolls with
+     the stage rather than sticking: at these heights a pinned chart would leave only a sliver
+     of the cards area visible, and card overlays would have to fight it for z-index.
+     position:relative is load-bearing — it is the containing block for .nx-zoom. */
+  .nx-chartwrap{flex:0 0 auto; height:560px; min-width:0; min-height:0; overflow:hidden; position:relative; background:var(--panel); padding:6px}
   .nx-chart{width:100%; height:100%; display:block; cursor:grab; touch-action:none}
   .nx-chart:active{cursor:grabbing}
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
@@ -62,7 +63,10 @@
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
 
-  .nx-panel{flex:1 1 auto; min-height:0; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
+  /* flex:1 0 auto — grow to fill the tile when there are few cards, but NEVER shrink below the
+     card grid's own height, or the grey background stops partway down and the cards render
+     outside it (overflow is visible so the ＋role menu can escape a card). */
+  .nx-panel{flex:1 0 auto; border-top:1px solid var(--line); background:var(--ground); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-content:start; gap:12px; padding:14px; overflow:visible}
   .nx-cardcol{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:visible; position:relative; box-shadow:0 1px 3px rgba(20,30,45,.05)}
   .nx-cardremove{position:absolute; top:12px; right:12px; z-index:2; width:22px; height:22px; border-radius:50%;
     border:1px solid var(--line); background:#fff; color:#9aa4b0; font-size:15px; line-height:1; cursor:pointer;
