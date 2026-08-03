@@ -864,12 +864,26 @@
             //     (candidate_role_fit_scores) when the role has no successors.
             const ownSucc = Array.isArray(data.successor_role_fit_scores)  ? data.successor_role_fit_scores  : [];
             const orgCand = Array.isArray(data.candidate_role_fit_scores)  ? data.candidate_role_fit_scores  : [];
-            const usingOwn = ownSucc.length > 0;
-            const succList = (usingOwn ? ownSucc : orgCand).map(c => ({
+            // Anyone already chosen to backfill another vacated role has "moved" and
+            // can't fill a second seat — exclude them (but keep THIS role's own pick,
+            // so it still shows highlighted and can be toggled off).
+            const assignedElsewhere = new Set();
+            root.descendants().forEach(v => {
+              if (v === d) return;
+              const f = v.data._filledBy;
+              if (f && f.user_id != null && f.user_id !== '') assignedElsewhere.add(String(f.user_id));
+            });
+            const mapCand = c => ({
               name:  c.successor_name    ?? c.candidate_name    ?? '—',
               uid:   c.successor_user_id ?? c.candidate_user_id ?? null,
               score: c.role_fit_score
-            })).slice(0, 5);
+            });
+            const isAvailable = c => c.uid == null || !assignedElsewhere.has(String(c.uid));
+            const availOwn  = ownSucc.map(mapCand).filter(isAvailable);
+            const availCand = orgCand.map(mapCand).filter(isAvailable);
+            // Fall back to org-wide recs if the role's own successors are all taken.
+            const usingOwn  = availOwn.length > 0;
+            const succList  = (usingOwn ? availOwn : availCand).slice(0, 5);
             const recColor  = succList.length ? '#27ae60' : '#e74c3c';
             const listTitle = usingOwn ? 'SUCCESSORS' : 'RECOMMENDED SUCCESSORS';
             // No internal bench at all — the role can only be filled by an external hire.
