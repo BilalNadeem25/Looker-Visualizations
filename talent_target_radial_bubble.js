@@ -44,11 +44,12 @@
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
-  /* Chart keeps a FIXED pixel height and stays pinned at the top, with or without a
+  /* Chart keeps an EXPLICIT pixel height and stays pinned at the top, with or without a
      selection (a % / flex-grow height collapses on Looker's first paint before the tile
-     has a resolved height). The cards area below grows as employees are added; the stage
-     scrolls. */
-  .nx-chartwrap{flex:0 0 440px; min-width:0; min-height:0; overflow:hidden; position:sticky; top:0; background:var(--panel); z-index:2; padding:6px}
+     has a resolved height). _sizeChart() overrides the height below from the tile's real
+     size once it resolves; this value only applies until then. The cards area below grows
+     as employees are added; the stage scrolls. */
+  .nx-chartwrap{flex:0 0 auto; height:560px; min-width:0; min-height:0; overflow:hidden; position:sticky; top:0; background:var(--panel); z-index:2; padding:6px}
   .nx-chart{width:100%; height:100%; display:block; cursor:grab; touch-action:none}
   .nx-chart:active{cursor:grabbing}
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
@@ -179,7 +180,7 @@
   .cx-footnote{font-size:11px; color:var(--muted); margin-top:11px; line-height:1.5}
   @media (max-width:1024px){ .nx-panel{grid-template-columns:repeat(2,minmax(0,1fr))} }
   @media (max-width:760px){
-    .nx-chartwrap{flex-basis:360px}
+    .nx-chartwrap{height:400px}
     .nx-panel{grid-template-columns:1fr}
     .nx-legend{margin-left:0}
   }`;
@@ -237,7 +238,8 @@
       color_high:   { type: "string", display: "color", label: "High colour",   default: "#2fbf71", section: "Bands", order: 3 },
       color_medium: { type: "string", display: "color", label: "Medium colour", default: "#f5a623", section: "Bands", order: 4 },
       color_low:    { type: "string", display: "color", label: "Low colour",    default: "#e8503a", section: "Bands", order: 5 },
-      default_role_fit_max: { type: "number", label: "Default 'Role fit max' (blank = data max)", default: null, section: "Scale", order: 1 }
+      default_role_fit_max: { type: "number", label: "Default 'Role fit max' (blank = data max)", default: null, section: "Scale", order: 1 },
+      chart_height_pct: { type: "number", label: "Chart height (% of tile below the toolbar)", default: 86, section: "Scale", order: 2 }
     },
 
     // ---- one-time shell -----------------------------------------------------
@@ -247,6 +249,7 @@
       this.$ = {
         el: element,
         wrap: q(".nx-wrap"),
+        chartwrap: q(".nx-chartwrap"),
         svg: q(".nx-chart"),
         panel: q(".nx-panel"),
         count: q(".nx-count"),
@@ -262,7 +265,7 @@
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
         selectedPairs: [], chartRole: null, openMenuPk: null,
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {},
-        search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null,
+        search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
         collapsed: {},   // shared across cards so rows stay aligned when comparing
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
@@ -346,12 +349,41 @@
         var c = e.target.closest("input[data-sbeh]"); if (!c) return;
         st.simWeak[c.getAttribute("data-sbeh")] = c.checked; self._renderSim();
       });
+
+      this._sizeChart();
+      if (typeof ResizeObserver !== "undefined") {
+        this._ro = new ResizeObserver(function () { self._sizeChart(); });
+        this._ro.observe(element);
+      }
+    },
+
+    // Give the chart most of the tile instead of a hard-coded 440px. Bounded two ways:
+    // it never exceeds the room under the toolbar (a chart taller than the tile just forces
+    // scrolling), and never exceeds width/1.3 — the SVG's 760x504 viewBox is letterboxed with
+    // "meet", so extra height on a narrow tile only pads the sides.
+    _sizeChart: function () {
+      var $ = this.$; if (!$ || !$.chartwrap) return;
+      var h = $.el.clientHeight || 0, w = $.el.clientWidth || 0;
+      var toolbar = $.el.querySelector(".nx-toolbar");
+      var avail = h > 0 ? h - (toolbar ? toolbar.offsetHeight : 58) : 0;
+      if (avail <= 0) return;                                  // unresolved tile -> keep the CSS height
+      var pct = Number(this._config && this._config.chart_height_pct);
+      if (!(pct > 0)) pct = 86;
+      pct = Math.max(40, Math.min(100, pct));
+      var px = Math.round(avail * pct / 100);
+      // At the default (or higher) the old fixed 440px stays a floor, so this can only grow
+      // the chart. Dial the option below 86 and you get exactly the % you asked for.
+      if (pct >= 86) px = Math.max(px, Math.min(440, avail));
+      if (w > 0) px = Math.min(px, Math.round(w / 1.3));
+      px = Math.max(300, Math.min(1040, px));
+      if (px !== this._chartPx) { this._chartPx = px; $.chartwrap.style.height = px + "px"; }
     },
 
     // ---- data in ------------------------------------------------------------
     updateAsync: function (data, element, config, queryResponse, details, done) {
       this._config = Object.assign(
-        { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a", default_role_fit_max: null },
+        { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
+          default_role_fit_max: null, chart_height_pct: 86 },
         config || {});
 
       var fields = (queryResponse && queryResponse.fields) || {};
@@ -429,6 +461,7 @@
         st.selectedPairs = [];
         st.openMenuPk = null;
         st.zoom = 1; st.panX = 0; st.panY = 0;
+        st.animateIn = true;   // new population -> nodes glide in (consumed by _draw)
         // default chart role = the one the most employees are assessed against
         var counts = {};
         emps.forEach(function (e) { counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
@@ -476,6 +509,7 @@
         ? "Target role: <b>" + esc(st.rolesInView[0].name) + "</b>"
         : (st.rolesInView.length > 1 ? "<b>" + st.rolesInView.length + "</b> target roles in view" : "");
 
+      this._sizeChart();
       this._draw();
       if (done) done();
     },
@@ -529,7 +563,15 @@
         st.chartRoot.appendChild(svgEl("circle", { class: "nx-ring", cx: cx, cy: cy, r: maxR * f }));
         var lb = svgEl("text", { class: "nx-ring-label", x: cx + 4, y: cy - maxR * f + 13 }); lb.textContent = Math.round((1 - f) * 100) + "%"; st.chartRoot.appendChild(lb);
       });
-      list.forEach(function (emp) {
+      // Entrance: after a target-role filter change (or first load) every node spawns a step
+      // further out along its own angle and glides back into place, swept in fit order
+      // (centre -> rim). Only this draw animates — the flag is consumed here so clicking a
+      // bubble, searching or dragging the slider still repaints instantly.
+      var flyIn = st.animateIn, flying = [];
+      st.animateIn = false;
+      var n = list.length;
+
+      list.forEach(function (emp, i) {
         var m = Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
         var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
@@ -549,8 +591,27 @@
           if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
           else { self._togglePair(emp.pk); self._draw(); }
         });
+        if (flyIn) {
+          // spawn one step further out along the node's own angle, clamped inside the
+          // viewBox so nothing starts life clipped by the SVG edge
+          var sx = Math.max(6, Math.min(W - 6, bx + 46 * Math.cos(ang)));
+          var sy = Math.max(6, Math.min(H - 6, by + 46 * Math.sin(ang)));
+          var delay = n > 1 ? Math.round(i / (n - 1) * 280) : 0;   // sweep centre -> rim
+          g.style.opacity = "0";
+          g.style.transform = "translate(" + (sx - bx).toFixed(1) + "px," + (sy - by).toFixed(1) + "px)";
+          g.style.transition = "transform 720ms cubic-bezier(.16,.86,.28,1) " + delay + "ms," +
+                               " opacity 420ms ease-out " + delay + "ms";
+          flying.push(g);
+        }
         st.chartRoot.appendChild(g);
       });
+      // Flush layout so the spawn offset becomes the transition's start value, then set the
+      // resting state in the same tick. Deliberately synchronous rather than rAF-based: if the
+      // browser never runs the transition, the nodes are simply already in place.
+      if (flying.length) {
+        st.chartRoot.getBoundingClientRect();
+        flying.forEach(function (g) { g.style.transform = "translate(0px,0px)"; g.style.opacity = ""; });
+      }
       if (st.mode === "simulate") this._renderSim(); else this._renderPanels();
     },
 
