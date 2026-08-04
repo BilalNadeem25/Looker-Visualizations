@@ -9,6 +9,12 @@
   function initials(n){return String(n||"?").split(/\s+/).map(function(w){return w[0];}).slice(0,2).join("").toUpperCase();}
   function svgEl(tag,a){var n=document.createElementNS(SVGNS,tag);for(var k in a)n.setAttribute(k,a[k]);return n;}
   function hashStr(s){var h=2166136261;s=String(s);for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0);}
+  // Org unit names arrive as free text: NULL, "", "   ", trailing spaces and doubled inner
+  // spaces all occur. Normalise to a single display form so "absent" is always "" (never a
+  // truthy blank that would pool unrelated people into a phantom unit) and so two spellings
+  // of the same real unit still match.
+  function orgUnit(v){ return v==null ? "" : String(v).replace(/\s+/g," ").trim(); }
+  function unitKey(v){ return orgUnit(v).toLowerCase(); }
   function coerceArray(v){
     if(v==null) return [];
     if(Array.isArray(v)) return v;
@@ -130,10 +136,12 @@
   .nx-seg{display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; margin-top:1px}
   .nx-seg button{border:none; background:#fff; color:var(--muted); font-size:12.5px; font-weight:700; padding:7px 13px; cursor:pointer}
   .nx-seg button.on{background:var(--accent); color:#fff}
-  .nx-succ-field{display:none}
-  .nx-wrap.simmode .nx-succ-field{display:flex}
+  .nx-simfield{display:none}
+  .nx-wrap.simmode .nx-simfield{display:flex}
   .nx-bubble.focus circle{stroke:var(--accent); stroke-width:2.5}
   .nx-bubble.comp circle{stroke:var(--pos); stroke-width:2.5}
+  .nx-bubble.out{cursor:default}                 /* outside the complement pool — not pickable */
+  .nx-bubble.out:hover circle{stroke:none; stroke-width:0}
   .nx-wrap.simmode .nx-panel{display:block; padding:0}
   .cx-shell{padding:14px 16px 22px}
   .cx-cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
@@ -162,6 +170,18 @@
   .cx-lift.cx-pos{color:var(--pos)}
   .cx-cap{font-size:9px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin-top:5px}
   .cx-reading{font-size:11px; color:var(--muted); margin-top:7px; line-height:1.5}
+  /* ---- complement pool scoping (department -> division -> directorate -> org) ---- */
+  .cx-scopebar{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:12px; font-size:11px; color:var(--muted)}
+  .cx-scopebar b{color:var(--ink)}
+  .cx-unit{display:inline-block; font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--accent); background:var(--accent-soft); border-radius:20px; padding:2px 8px}
+  .cx-widen{border:1px solid var(--line); background:#fff; color:var(--accent); font-weight:700; font-size:11px; border-radius:20px; padding:4px 10px; cursor:pointer}
+  .cx-widen:hover{border-color:var(--accent)}
+  .cx-widen:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .cx-noresult{background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--neg); border-radius:12px; padding:13px 16px; margin-bottom:14px}
+  .cx-noresult .nr-t{font-size:12.5px; font-weight:800; color:var(--ink)}
+  .cx-noresult .nr-s{font-size:11px; color:var(--muted); margin-top:4px; line-height:1.5}
+  .cx-noresult .cx-widen{margin-top:10px; margin-right:7px}
+  .cx-outside{font-size:9px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--neg); background:var(--neg-soft); border-radius:20px; padding:2px 8px; margin-left:6px}
   .cx-suggest{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px}
   .cx-suggest-lbl{font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:#9aa4b0}
   .cx-sugg{border:1px solid var(--line); background:#fff; color:var(--accent); font-weight:700; font-size:12px; border-radius:20px; padding:5px 11px; cursor:pointer}
@@ -207,9 +227,13 @@
             '<button type="button" data-mode="simulate">Simulate</button>' +
           '</div>' +
         '</div>' +
-        '<div class="nx-field nx-succ-field">' +
+        '<div class="nx-field nx-simfield">' +
           '<label>Successor</label>' +
           '<select class="nx-select nx-succ"></select>' +
+        '</div>' +
+        '<div class="nx-field nx-simfield">' +
+          '<label>Complement pool</label>' +
+          '<select class="nx-select nx-scope"></select>' +
         '</div>' +
         '<span class="nx-rolelbl"></span>' +
         '<span class="nx-count"></span>' +
@@ -263,12 +287,13 @@
         search: q(".nx-search"),
         mode: q(".nx-mode"),
         succ: q(".nx-succ"),
+        scope: q(".nx-scope"),
         zoom: q(".nx-zoom")
       };
       this.state = {
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
         selectedPairs: [], chartRole: null, openMenuPk: null,
-        mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {},
+        mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
         search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
         collapsed: {},   // shared across cards so rows stay aligned when comparing
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
@@ -291,7 +316,11 @@
       $.succ.addEventListener("change", function () {
         st.simFocus = $.succ.value;
         if (st.simComplements[st.simFocus]) st.simComplements[st.simFocus] = false;
-        self._defaultWeak(); self._draw();
+        // a new successor sits in a different org unit, so re-derive the pool
+        self._defaultWeak(); st.simScope = self._defaultScope(); self._draw();
+      });
+      $.scope.addEventListener("change", function () {
+        st.simScope = $.scope.value; self._draw();
       });
       $.zoom.addEventListener("click", function (e) {
         var b = e.target.closest("button"); if (!b) return;
@@ -332,6 +361,8 @@
         if (srm) { st.simComplements[srm.getAttribute("data-pk")] = false; self._draw(); return; }
         var sug = e.target.closest(".cx-sugg");
         if (sug) { st.simComplements[sug.getAttribute("data-pk")] = true; self._draw(); return; }
+        var wide = e.target.closest(".cx-widen");
+        if (wide) { st.simScope = wide.getAttribute("data-scope"); self._draw(); return; }
         var rm = e.target.closest(".nx-cardremove");
         if (rm) { self._togglePair(rm.getAttribute("data-pk")); st.openMenuPk = null; self._draw(); return; }
         var add = e.target.closest(".nx-addrole");
@@ -395,7 +426,8 @@
       var map = {};
       ["user_id","name","job_title","current_company","picture","country","target_role_id","target_role_name",
        "role_fit","leadership_score","agility_score","cultural_fit_score","technical_score",
-       "subcompetencies_json","skills_json","bench_strength","manager_name","performance_year","performance_rating"]
+       "subcompetencies_json","skills_json","bench_strength","manager_name","performance_year","performance_rating",
+       "directorate_name","division_name","department_name"]
       .forEach(function (k) {
         var f = all.find(function (x) { return x.name.split(".").pop() === k || x.name === k; });
         map[k] = f ? f.name : null;
@@ -419,6 +451,12 @@
           picture: val(row, "picture") || "",
           roleName: val(row, "target_role_name") || ("Role " + roleId),
           managerName: val(row, "manager_name") || "",
+          // org placement of the person's CURRENT role — scopes the complement pool.
+          // orgUnit() collapses NULL / "" / "   " to "" so a missing level is treated as
+          // "not recorded" rather than as a unit that blank rows would all share.
+          directorate: orgUnit(val(row, "directorate_name")),
+          division: orgUnit(val(row, "division_name")),
+          department: orgUnit(val(row, "department_name")),
           benchStrength: val(row, "bench_strength"),
           perfYear: val(row, "performance_year"),
           perfRating: val(row, "performance_rating"),
@@ -497,10 +535,13 @@
       if (roleChanged || !st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole) {
         st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
         this._defaultWeak();
+        st.simScope = this._defaultScope();
       } else {
         Object.keys(st.simComplements).forEach(function (pk) {
           if (!st.byPair[pk] || st.byPair[pk].roleId !== st.chartRole) delete st.simComplements[pk];
         });
+        // the level may have emptied out (or become usable) as rows changed
+        if (st.simScope !== "org" && !this._simCandidates(st.simScope).length) st.simScope = this._defaultScope();
       }
       this.$.succ.innerHTML = roleEmps.map(function (e) {
         return '<option value="' + esc(e.pk) + '">' + esc(e.name) + (e.jobTitle ? " — " + esc(e.jobTitle) : "") + '</option>';
@@ -592,17 +633,25 @@
         var sim = st.mode === "simulate";
         var isFocus = sim && emp.pk === st.simFocus;
         var isComp = sim && !isFocus && !!st.simComplements[emp.pk];
+        // Simulate mode: only the current complement pool is pickable. Already-chosen
+        // complements stay lit even if the pool was narrowed after they were added.
+        var inPool = !sim || isFocus || isComp || self._inScope(emp, st.simScope);
         var cls = "nx-bubble";
         if (isFocus) cls += " focus";
         else if (isComp) cls += " comp";
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
+        if (!inPool) cls += " out";
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
-        var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit"; g.appendChild(ti);
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
+          "fill-opacity": (hit && inPool) ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+        var ti = svgEl("title", {});
+        ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" +
+          (sim && !inPool ? " · outside " + self._scopeLabel(st.simScope).toLowerCase() : "");
+        g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
-          if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
+          if (st.mode === "simulate") { if (!inPool) return; self._toggleComplement(emp.pk); self._draw(); }
           else { self._togglePair(emp.pk); self._draw(); }
         });
         if (flyIn) {
@@ -765,9 +814,54 @@
       st.behaviours.forEach(function (b) { if (st.simWeak[b.id]) s += b.w * Math.max(0, (emp.beh[b.name] || 0) - (f.beh[b.name] || 0)); });
       return s;
     },
-    _simRanked: function () {
+    // ---- complement pool scoping -------------------------------------------
+    // Complements are searched in the successor's own org unit first and widened outwards only
+    // when that turns up nobody useful. Narrowest -> widest; "org" is the catch-all fallback.
+    // NOTE: every level still requires the candidate to be assessed against the SAME target
+    // role, because behaviour scores come from a (user × role) assessment — scores from a
+    // different role's formula engine are not comparable. So "whole organisation" means
+    // everyone in view assessed against this role.
+    _SCOPES: ["department", "division", "directorate", "org"],
+    _scopeLabel: function (s) {
+      return { department: "Department", division: "Division", directorate: "Directorate", org: "Whole organisation" }[s] || s;
+    },
+    _scopeUnit: function (s) {                      // the focus's unit name at this level
+      if (s === "org") return "";
+      var f = this._simFocusEmp();
+      return f ? orgUnit(f[s]) : "";                 // "" when the level isn't recorded
+    },
+    _inScope: function (emp, s) {
+      if (s === "org") return true;
+      var unit = this._scopeUnit(s);
+      if (!unit) return false;                      // no unit on the successor -> level unusable
+      return unitKey(emp[s]) === unitKey(unit);     // case/space-insensitive, so " Investments" matches
+    },
+    // everyone eligible to be picked at a given level (excludes the successor)
+    _simCandidates: function (s) {
       var self = this, st = this.state;
-      return st.employees.filter(function (e) { return e.roleId === st.chartRole && e.pk !== st.simFocus; })
+      return st.employees.filter(function (e) {
+        return e.roleId === st.chartRole && e.pk !== st.simFocus && self._inScope(e, s || st.simScope);
+      });
+    },
+    // per level: pool size + how many of them actually cover a checked gap
+    _scopeStats: function () {
+      var self = this, out = {};
+      this._SCOPES.forEach(function (s) {
+        var c = self._simCandidates(s);
+        out[s] = { unit: self._scopeUnit(s), n: c.length,
+                   covering: c.filter(function (e) { return self._simGapFit(e) > 0; }).length };
+      });
+      return out;
+    },
+    // narrowest level that has anyone in it at all; org is always available
+    _defaultScope: function () {
+      var self = this, pick = null;
+      this._SCOPES.forEach(function (s) { if (!pick && s !== "org" && self._simCandidates(s).length) pick = s; });
+      return pick || "org";
+    },
+    _simRanked: function () {
+      var self = this;
+      return this._simCandidates()
         .map(function (e) { return { e: e, gf: self._simGapFit(e) }; })
         .sort(function (a, b) { return b.gf - a.gf; });
     },
@@ -778,36 +872,101 @@
         .slice(0, 3).forEach(function (b) { st.simWeak[b.id] = true; });
     },
     _simBar: function (v) { return '<span class="cx-barcell"><span class="cx-mini"><i style="width:' + v + '%;background:' + this._color(v) + '"></i></span>' + Math.round(v) + '</span>'; },
+    // narrowest -> widest org placement, e.g. "Rewards · Human Capital · Corporate Services"
+    _orgLine: function (emp) {
+      var parts = [emp.department, emp.division, emp.directorate].filter(Boolean);
+      return parts.length ? esc(parts.join(" · ")) : "";
+    },
+
+    // toolbar pool selector — rebuilt on every sim render because the counts move with the
+    // successor and with which gaps are checked
+    _renderScopeSelect: function (stats) {
+      var self = this, st = this.state;
+      this.$.scope.innerHTML = this._SCOPES.map(function (s) {
+        var d = stats[s], usable = s === "org" || (d.unit && d.n);
+        var label = self._scopeLabel(s) +
+          (s === "org" ? "" : (d.unit ? " — " + d.unit : " — not set")) +
+          (usable ? " (" + d.n + ")" : "");
+        return '<option value="' + s + '"' + (usable ? "" : " disabled") + (s === st.simScope ? " selected" : "") + '>' +
+               esc(label) + '</option>';
+      }).join("");
+      this.$.scope.value = st.simScope;
+    },
+    // the levels wider than the current one that would actually turn something up
+    _widerScopes: function (stats) {
+      var st = this.state, i = this._SCOPES.indexOf(st.simScope);
+      return this._SCOPES.slice(i + 1).filter(function (s) { return s === "org" || (stats[s].unit && stats[s].n); });
+    },
+    // The number is always "how many people there cover the checked gaps" — the actionable
+    // figure. Pool sizes live in the toolbar select.
+    _widenBtn: function (s, stats) {
+      var d = stats[s];
+      return '<button class="cx-widen" data-scope="' + s + '" title="' + d.covering + ' of ' + d.n +
+        ' there score higher than the successor on the checked behaviours">' +
+        (s === "org" ? "Search the whole organisation" : "Widen to " + this._scopeLabel(s).toLowerCase() + (d.unit ? " — " + esc(d.unit) : "")) +
+        ' <b>' + d.covering + '</b></button>';
+    },
 
     _renderSim: function () {
       var self = this, st = this.state, panel = this.$.panel;
       var f = this._simFocusEmp();
       if (!f || !st.behaviours.length) {
+        this.$.scope.innerHTML = "";
         panel.innerHTML = '<div class="nx-empty"><p>No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.</p></div>';
         return;
       }
+      var stats = this._scopeStats();
+      this._renderScopeSelect(stats);
       var rank = this._simRanked();
       var recIds = {}; rank.filter(function (r) { return r.gf > 0; }).slice(0, 2).forEach(function (r) { recIds[r.e.pk] = true; });
       var comps = this._simComplementEmps();
       var first = f.name.split(/\s+/)[0];
       var solV = this._simSolo(), teamV = this._simHeadline(), lift = teamV - solV;
       var liftTxt = (lift >= 0 ? "+" : "") + Math.round(lift) + "%";
+      var cur = stats[st.simScope], wider = this._widerScopes(stats);
+      var poolTxt = st.simScope === "org"
+        ? "the whole organisation"
+        : self._scopeLabel(st.simScope).toLowerCase() + " " + (cur.unit ? "<b>" + esc(cur.unit) + "</b>" : "(not set)");
       var reading = comps.length
         ? ("Partners can coach " + esc(first) + " on the green behaviours where they rank higher.")
-        : "Click bubbles above, or a suggestion below, to add complements.";
+        : "Click a highlighted bubble above, or a suggestion below, to add complements.";
 
-      var html = '<div class="cx-shell"><div class="cx-cards">';
+      var html = '<div class="cx-shell">';
+
+      // Where complements are being searched, and how to widen out of a dead end.
+      html += '<div class="cx-scopebar"><span>Complements searched in ' + poolTxt +
+        ' — <b>' + cur.n + '</b> assessed against this role, <b>' + cur.covering + '</b> cover the checked gaps.</span>' +
+        wider.map(function (s) { return self._widenBtn(s, stats); }).join("") + '</div>';
+      if (!cur.covering) {
+        var unitTxt = st.simScope === "org" ? "the organisation"
+          : (cur.unit ? self._scopeLabel(st.simScope).toLowerCase() + " " + esc(cur.unit) : "this level (no unit recorded for " + esc(first) + ")");
+        html += '<div class="cx-noresult"><div class="nr-t">No complement found in ' + unitTxt + '.</div>' +
+          '<div class="nr-s">' + (cur.n
+            ? "None of the " + cur.n + " people here score higher than " + esc(first) + " on the checked behaviours."
+            : "Nobody here is assessed against this role.") +
+          (wider.length ? " Widen the search to bring in people from further out." :
+            " There is nobody left to bring in — try checking different behaviours.") + '</div>' +
+          wider.map(function (s) { return self._widenBtn(s, stats); }).join("") + '</div>';
+      }
+
+      html += '<div class="cx-cards">';
       html += '<div class="cx-card cx-focus"><div class="cx-eyebrow">Successor candidate</div>' +
         '<div class="cx-nm">' + esc(f.name) + '</div><div class="cx-ttl">' + esc(f.jobTitle || f.company || "") + '</div>' +
+        (self._orgLine(f) ? '<div class="cx-meta">' + self._orgLine(f) + '</div>' : '') +
         '<div class="cx-meta">Role fit <b>' + Math.round(f.roleFit) + '%</b></div>' +
         '<div class="cx-fh"><div class="cx-row"><span class="cx-solo">Solo ' + Math.round(solV) + '%</span><span class="cx-arrow">&rarr;</span>' +
         '<span class="cx-team">' + Math.round(teamV) + '%</span><span class="cx-lift ' + (lift > 0.5 ? "cx-pos" : "") + '">' + liftTxt + '</span></div>' +
         '<div class="cx-cap">Combined behaviour profile</div><div class="cx-reading">' + reading + '</div></div></div>';
       comps.forEach(function (p) {
         var ov = self._wavg(function (b) { return p.beh[b.name] || 0; });
+        var outside = !self._inScope(p, st.simScope);
         html += '<div class="cx-card cx-on"><button class="cx-remove" data-pk="' + esc(p.pk) + '" title="Remove complement">&times;</button>' +
-          '<div class="cx-eyebrow">Complement</div><div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
+          '<div class="cx-eyebrow">Complement' +
+            (outside ? '<span class="cx-outside">outside ' + esc(self._scopeLabel(st.simScope).toLowerCase()) + '</span>' : '') +
+          '</div>' +
+          '<div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
           (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '') +
+          (self._orgLine(p) ? '<div class="cx-meta">' + self._orgLine(p) + '</div>' : '') +
           '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b></div>' +
           '<div class="cx-gapfit">Covers selected gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
       });
@@ -835,7 +994,8 @@
         body += '</tr>';
       });
       html += '<div class="cx-tblwrap"><table><thead>' + thead + '</thead><tbody>' + body + '</tbody></table></div>';
-      html += '<p class="cx-footnote">Bar = the candidate&#39;s own score per behaviour. <b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. Suggestions rank by coverage of the <b>checked</b> behaviours.</p>';
+      html += '<p class="cx-footnote">Bar = the candidate&#39;s own score per behaviour. <b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. Suggestions rank by coverage of the <b>checked</b> behaviours, drawn from the current pool only. ' +
+        'Complements start in the successor&#39;s own department and widen outwards; every candidate must be assessed against the same target role, since behaviour scores come from that assessment.</p>';
       html += '</div>';
       panel.innerHTML = html;
     }
