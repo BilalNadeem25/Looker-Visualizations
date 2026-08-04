@@ -169,6 +169,11 @@
   .cx-lift{font-size:14px; font-weight:800; font-variant-numeric:tabular-nums}
   .cx-lift.cx-pos{color:var(--pos)}
   .cx-cap{font-size:9px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin-top:5px}
+  .cx-checked{display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; margin-top:9px; padding-top:9px; border-top:1px solid var(--line-soft)}
+  .cx-ct{font-size:19px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums}
+  .cx-capin{margin-top:0; flex:1 1 100%}
+  .cx-tblwrap tfoot td{border-top:1px solid var(--line); border-bottom:none; background:#fbfcfe; font-weight:700}
+  .cx-tblwrap tfoot tr.cx-chkrow td{background:var(--accent-soft); border-top:1px solid var(--line-soft)}
   .cx-reading{font-size:11px; color:var(--muted); margin-top:7px; line-height:1.5}
   /* ---- complement pool scoping (department -> division -> directorate -> org) ---- */
   .cx-scopebar{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:12px; font-size:11px; color:var(--muted)}
@@ -433,6 +438,15 @@
         map[k] = f ? f.name : null;
       });
       var val = function (row, k) { var fn = map[k]; return (fn && row[fn]) ? row[fn].value : null; };
+
+      // Whether the org dimensions reached the viz at all. "Absent from the query" and "NULL for
+      // this person" both used to surface as "not set", which makes a mis-scoped pool impossible
+      // to diagnose — they are reported differently now.
+      this.state.orgInQuery = {
+        department: !!map.department_name,
+        division: !!map.division_name,
+        directorate: !!map.directorate_name
+      };
 
       var emps = [], roleIds = {};
       (data || []).forEach(function (row) {
@@ -801,18 +815,38 @@
       var sel = this._simComplementEmps(); if (!sel.length) return null;
       return Math.max.apply(null, sel.map(function (p) { return p.beh[bname] || 0; }));
     },
-    _wavg: function (fn) { var bs = this.state.behaviours, s = 0, w = 0; bs.forEach(function (b) { s += b.w * fn(b); w += b.w; }); return w ? s / w : 0; },
+    _wavgOver: function (bs, fn) { var s = 0, w = 0; bs.forEach(function (b) { s += b.w * fn(b); w += b.w; }); return w ? s / w : 0; },
+    _wavg: function (fn) { return this._wavgOver(this.state.behaviours, fn); },
+    _checkedBehaviours: function () {
+      var st = this.state;
+      return st.behaviours.filter(function (b) { return st.simWeak[b.id]; });
+    },
     _simSolo: function () { var f = this._simFocusEmp(); return this._wavg(function (b) { return f.beh[b.name] || 0; }); },
     _simTeamValue: function (bname) {
       var f = this._simFocusEmp(), bp = this._bestPartner(bname), cv = f.beh[bname] || 0;
       return bp == null ? cv : Math.max(cv, bp);   // ceiling: lean on whoever is strongest
     },
     _simHeadline: function () { var self = this; return this._wavg(function (b) { return self._simTeamValue(b.name); }); },
-    _simDelta: function (bname) { var f = this._simFocusEmp(), bp = this._bestPartner(bname); return bp == null ? null : bp - (f.beh[bname] || 0); },
+    // What the partnership actually ADDS on a behaviour: Effective − candidate. Never negative,
+    // because the ceiling method means a weaker partner cannot pull the team value down. (The old
+    // Δ was bestPartner − candidate, which went negative and did not sum to the headline lift.)
+    _simGain: function (bname) {
+      var f = this._simFocusEmp();
+      return Math.max(0, this._simTeamValue(bname) - (f.beh[bname] || 0));
+    },
+    // Solo / team / lift restricted to the checked behaviours — the gaps the user is steering.
+    _simCheckedStats: function () {
+      var self = this, bs = this._checkedBehaviours(), f = this._simFocusEmp();
+      if (!bs.length || !f) return null;
+      var solo = this._wavgOver(bs, function (b) { return f.beh[b.name] || 0; });
+      var team = this._wavgOver(bs, function (b) { return self._simTeamValue(b.name); });
+      return { n: bs.length, solo: solo, team: team, lift: team - solo };
+    },
+    // One candidate's average lift on the checked behaviours. An average (not a sum) so it is in
+    // the same units as the headline lift; ranking is unchanged either way.
     _simGapFit: function (emp) {
-      var st = this.state, f = this._simFocusEmp(), s = 0;
-      st.behaviours.forEach(function (b) { if (st.simWeak[b.id]) s += b.w * Math.max(0, (emp.beh[b.name] || 0) - (f.beh[b.name] || 0)); });
-      return s;
+      var f = this._simFocusEmp(), bs = this._checkedBehaviours();
+      return this._wavgOver(bs, function (b) { return Math.max(0, (emp.beh[b.name] || 0) - (f.beh[b.name] || 0)); });
     },
     // ---- complement pool scoping -------------------------------------------
     // Complements are searched in the successor's own org unit first and widened outwards only
@@ -843,15 +877,28 @@
         return e.roleId === st.chartRole && e.pk !== st.simFocus && self._inScope(e, s || st.simScope);
       });
     },
-    // per level: pool size + how many of them actually cover a checked gap
+    // per level: pool size, how many cover a checked gap, and why a level is unusable
+    // (field absent from the query vs. blank on this successor's row)
     _scopeStats: function () {
-      var self = this, out = {};
+      var self = this, st = this.state, out = {};
+      var roleN = st.employees.filter(function (e) { return e.roleId === st.chartRole; });
       this._SCOPES.forEach(function (s) {
         var c = self._simCandidates(s);
+        var inQuery = s === "org" || !st.orgInQuery || st.orgInQuery[s] !== false;
         out[s] = { unit: self._scopeUnit(s), n: c.length,
-                   covering: c.filter(function (e) { return self._simGapFit(e) > 0; }).length };
+                   covering: c.filter(function (e) { return self._simGapFit(e) > 0; }).length,
+                   inQuery: inQuery,
+                   // how many rows in view carry this level at all — separates "bad data for this
+                   // one person" from "nobody has it"
+                   recorded: s === "org" ? roleN.length : roleN.filter(function (e) { return !!e[s]; }).length,
+                   ofTotal: roleN.length };
       });
       return out;
+    },
+    // levels that never arrived in the query — the actionable Looker-side fix
+    _missingOrgFields: function () {
+      var st = this.state;
+      return this._SCOPES.filter(function (s) { return s !== "org" && st.orgInQuery && st.orgInQuery[s] === false; });
     },
     // narrowest level that has anyone in it at all; org is always available
     _defaultScope: function () {
@@ -884,8 +931,11 @@
       var self = this, st = this.state;
       this.$.scope.innerHTML = this._SCOPES.map(function (s) {
         var d = stats[s], usable = s === "org" || (d.unit && d.n);
+        var why = !d.inQuery ? "not in query"                                  // dimension missing from the tile
+                : !d.unit ? (d.recorded ? "not recorded for this person" : "not recorded in this data")
+                : null;
         var label = self._scopeLabel(s) +
-          (s === "org" ? "" : (d.unit ? " — " + d.unit : " — not set")) +
+          (s === "org" ? "" : (why ? " — " + why : " — " + d.unit)) +
           (usable ? " (" + d.n + ")" : "");
         return '<option value="' + s + '"' + (usable ? "" : " disabled") + (s === st.simScope ? " selected" : "") + '>' +
                esc(label) + '</option>';
@@ -923,6 +973,7 @@
       var first = f.name.split(/\s+/)[0];
       var solV = this._simSolo(), teamV = this._simHeadline(), lift = teamV - solV;
       var liftTxt = (lift >= 0 ? "+" : "") + Math.round(lift) + "%";
+      var chk = this._simCheckedStats();
       var cur = stats[st.simScope], wider = this._widerScopes(stats);
       var poolTxt = st.simScope === "org"
         ? "the whole organisation"
@@ -937,7 +988,28 @@
       html += '<div class="cx-scopebar"><span>Complements searched in ' + poolTxt +
         ' — <b>' + cur.n + '</b> assessed against this role, <b>' + cur.covering + '</b> cover the checked gaps.</span>' +
         wider.map(function (s) { return self._widenBtn(s, stats); }).join("") + '</div>';
-      if (!cur.covering) {
+
+      // Org-unit scoping is impossible without the dimensions — say so, and say what to do.
+      var missing = this._missingOrgFields();
+      if (missing.length) {
+        html += '<div class="cx-noresult"><div class="nr-t">Org scoping unavailable — ' +
+          missing.map(function (s) { return esc(self._scopeLabel(s)); }).join(", ") +
+          ' not in this tile&#39;s query.</div>' +
+          '<div class="nr-s">Add the <b>' + missing.map(function (s) { return esc(self._scopeLabel(s)) + " Name"; }).join("</b>, <b>") +
+          '</b> dimension' + (missing.length > 1 ? "s" : "") + ' to the tile&#39;s selected fields (a new LookML dimension does not join an existing tile automatically). ' +
+          'Until then complements are searched across the whole organisation.</div></div>';
+      } else if (st.simScope === "org" && !stats.department.unit) {
+        // fields arrived, but this successor has no placement recorded
+        var rec = stats.department;
+        html += '<div class="cx-scopebar"><span>' + esc(first) + ' has no department recorded' +
+          (rec.recorded ? ' — department is populated for <b>' + rec.recorded + '</b> of <b>' + rec.ofTotal + '</b> people in view' : '') +
+          ', so the pool cannot be narrowed below the organisation.</span></div>';
+      }
+      if (!chk) {
+        html += '<div class="cx-noresult"><div class="nr-t">No behaviours checked.</div>' +
+          '<div class="nr-s">Tick the behaviours you want a partner to cover — the checked-gap average and the ' +
+          'ranking of suggestions are both driven by that selection.</div></div>';
+      } else if (!cur.covering) {
         var unitTxt = st.simScope === "org" ? "the organisation"
           : (cur.unit ? self._scopeLabel(st.simScope).toLowerCase() + " " + esc(cur.unit) : "this level (no unit recorded for " + esc(first) + ")");
         html += '<div class="cx-noresult"><div class="nr-t">No complement found in ' + unitTxt + '.</div>' +
@@ -956,7 +1028,13 @@
         '<div class="cx-meta">Role fit <b>' + Math.round(f.roleFit) + '%</b></div>' +
         '<div class="cx-fh"><div class="cx-row"><span class="cx-solo">Solo ' + Math.round(solV) + '%</span><span class="cx-arrow">&rarr;</span>' +
         '<span class="cx-team">' + Math.round(teamV) + '%</span><span class="cx-lift ' + (lift > 0.5 ? "cx-pos" : "") + '">' + liftTxt + '</span></div>' +
-        '<div class="cx-cap">Combined behaviour profile</div><div class="cx-reading">' + reading + '</div></div></div>';
+        '<div class="cx-cap">Average across all ' + st.behaviours.length + ' behaviours</div>' +
+        (chk ? '<div class="cx-checked"><span class="cx-solo">' + Math.round(chk.solo) + '%</span><span class="cx-arrow">&rarr;</span>' +
+               '<span class="cx-ct">' + Math.round(chk.team) + '%</span>' +
+               '<span class="cx-lift ' + (chk.lift > 0.5 ? "cx-pos" : "") + '">' +
+               (chk.lift >= 0 ? "+" : "") + Math.round(chk.lift) + '%</span>' +
+               '<span class="cx-cap cx-capin">on the ' + chk.n + ' checked gap' + (chk.n === 1 ? "" : "s") + '</span></div>' : '') +
+        '<div class="cx-reading">' + reading + '</div></div></div>';
       comps.forEach(function (p) {
         var ov = self._wavg(function (b) { return p.beh[b.name] || 0; });
         var outside = !self._inScope(p, st.simScope);
@@ -968,7 +1046,7 @@
           (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '') +
           (self._orgLine(p) ? '<div class="cx-meta">' + self._orgLine(p) + '</div>' : '') +
           '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b></div>' +
-          '<div class="cx-gapfit">Covers selected gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
+          '<div class="cx-gapfit">Avg gain on checked gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
       });
       html += '</div>';
 
@@ -981,20 +1059,39 @@
 
       var thead = '<tr><th>Behaviour</th><th class="cx-num">' + esc(first) + '</th>';
       comps.forEach(function (p) { thead += '<th class="cx-num">' + esc(p.name.split(/\s+/)[0]) + '</th>'; });
-      thead += '<th class="cx-num">Effective</th><th class="cx-num">&Delta;</th></tr>';
+      thead += '<th class="cx-num">Effective</th>' +
+        '<th class="cx-num" title="Effective minus ' + esc(first) + ' — how much the partners raise this behaviour. Never negative: a weaker partner cannot lower the ceiling.">Gain</th></tr>';
       var body = '';
       st.behaviours.forEach(function (b) {
-        var isWeak = !!st.simWeak[b.id], cv = f.beh[b.name] || 0, tv = self._simTeamValue(b.name), d = self._simDelta(b.name);
+        var isWeak = !!st.simWeak[b.id], cv = f.beh[b.name] || 0, tv = self._simTeamValue(b.name), g = self._simGain(b.name);
         body += '<tr class="' + (isWeak ? 'cx-weakrow' : '') + '"><td class="cx-beh"><label class="cx-chk"><input type="checkbox" data-sbeh="' + b.id + '"' + (isWeak ? ' checked' : '') + '>' + esc(b.name) + '</label>' + (b.quad ? '<span class="cx-qtag">' + esc(b.quad) + '</span>' : '') + '</td>';
         body += '<td class="cx-num">' + self._simBar(cv) + '</td>';
         comps.forEach(function (p) { body += '<td class="cx-num">' + self._simBar(p.beh[b.name] || 0) + '</td>'; });
         body += '<td class="cx-num">' + self._simBar(tv) + '</td>';
-        body += d == null ? '<td class="cx-num"><span class="cx-chip cx-z">&mdash;</span></td>'
-          : '<td class="cx-num"><span class="cx-chip ' + (d > 0 ? 'cx-p' : d < 0 ? 'cx-n' : 'cx-z') + '">' + (d > 0 ? '+' : '') + Math.round(d) + '</span></td>';
+        body += g > 0.5
+          ? '<td class="cx-num"><span class="cx-chip cx-p">+' + Math.round(g) + '</span></td>'
+          : '<td class="cx-num"><span class="cx-chip cx-z">&mdash;</span></td>';
         body += '</tr>';
       });
-      html += '<div class="cx-tblwrap"><table><thead>' + thead + '</thead><tbody>' + body + '</tbody></table></div>';
-      html += '<p class="cx-footnote">Bar = the candidate&#39;s own score per behaviour. <b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. Suggestions rank by coverage of the <b>checked</b> behaviours, drawn from the current pool only. ' +
+      // Footer makes the headline auditable: these averages ARE the Solo -> Team numbers above.
+      var foot = '<tr class="cx-totrow"><td>Average — all ' + st.behaviours.length + ' behaviours</td>' +
+        '<td class="cx-num">' + Math.round(solV) + '</td>';
+      comps.forEach(function (p) { foot += '<td class="cx-num">' + Math.round(self._wavg(function (b) { return p.beh[b.name] || 0; })) + '</td>'; });
+      foot += '<td class="cx-num">' + Math.round(teamV) + '</td>' +
+        '<td class="cx-num"><span class="cx-chip ' + (lift > 0.5 ? 'cx-p' : 'cx-z') + '">' + (lift > 0.5 ? "+" + Math.round(lift) : "&mdash;") + '</span></td></tr>';
+      if (chk) {
+        foot += '<tr class="cx-totrow cx-chkrow"><td>Average — ' + chk.n + ' checked gap' + (chk.n === 1 ? "" : "s") + '</td>' +
+          '<td class="cx-num">' + Math.round(chk.solo) + '</td>';
+        var cbs = this._checkedBehaviours();
+        comps.forEach(function (p) { foot += '<td class="cx-num">' + Math.round(self._wavgOver(cbs, function (b) { return p.beh[b.name] || 0; })) + '</td>'; });
+        foot += '<td class="cx-num">' + Math.round(chk.team) + '</td>' +
+          '<td class="cx-num"><span class="cx-chip ' + (chk.lift > 0.5 ? 'cx-p' : 'cx-z') + '">' + (chk.lift > 0.5 ? "+" + Math.round(chk.lift) : "&mdash;") + '</span></td></tr>';
+      }
+      html += '<div class="cx-tblwrap"><table><thead>' + thead + '</thead><tbody>' + body + '</tbody><tfoot>' + foot + '</tfoot></table></div>';
+      html += '<p class="cx-footnote"><b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. ' +
+        '<b>Gain</b> = Effective &minus; candidate, which is why it is never negative: where a partner scores lower, the ceiling is unchanged and the gain is nil. ' +
+        'The headline <b>Solo &rarr; Team</b> is the plain average of those two columns down every behaviour, and its lift is the average Gain — the table footer shows both, so the numbers tie out. ' +
+        'Ticking a behaviour marks it a <b>gap to close</b>: that drives the checked-gap average, and ranks suggestions by their average gain on those behaviours (current pool only). ' +
         'Complements start in the successor&#39;s own department and widen outwards; every candidate must be assessed against the same target role, since behaviour scores come from that assessment.</p>';
       html += '</div>';
       panel.innerHTML = html;
