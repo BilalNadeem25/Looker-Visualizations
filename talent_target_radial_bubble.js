@@ -549,12 +549,19 @@
       var sim = st.mode === "simulate";
       var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
                    .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      // Idle state — no target role picked in the Looker filter, so every (employee × role) row
+      // arrives and the radius cannot mean "fit to the target role". Park every node on the 0%
+      // rim in the Low colour instead of plotting a blob of scores against different roles.
+      // Simulate mode always scopes itself to one role, so it never idles.
+      var idle = !sim && st.rolesInView.length !== 1;
       if (sim) {
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
-      } else if (st.rolesInView.length > 1) {
-        this.$.count.textContent = list.length + " assessments · " + st.userIds.length + " employees · " + st.rolesInView.length + " roles" +
-          (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+      } else if (idle) {
+        this.$.count.textContent = !list.length ? "No assessments in view"
+          : list.length + " assessments · " + st.userIds.length + " employees · " + st.rolesInView.length + " roles" +
+            " · fit not plotted — filter to one target role" +
+            (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
       } else {
         this.$.count.textContent = list.length + " employees" +
           (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
@@ -574,9 +581,12 @@
       var flyIn = st.animateIn, flying = [];
       st.animateIn = false;
       var n = list.length;
+      // explicit rather than leaning on _color(0) — that returns the Medium colour if someone
+      // sets the medium threshold to 0
+      var idleFill = (this._config && this._config.color_low) || "#e8503a";
 
       list.forEach(function (emp, i) {
-        var m = Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
+        var m = idle ? 0 : Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
         var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
         var sim = st.mode === "simulate";
@@ -588,7 +598,7 @@
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
-        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+        g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m), "fill-opacity": hit ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {}); ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit"; g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
