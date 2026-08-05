@@ -96,6 +96,8 @@
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
           .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
+          .to-opt-btn { width:100%; margin-top:8px; padding:6px 8px; border:none; border-radius:5px; background:#16a085; color:#fff; font-size:11px; font-weight:600; cursor:pointer; }
+          .to-opt-btn:hover { background:#12876f; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
@@ -492,7 +494,10 @@
                 }).join('')}
               </div>
               <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
-              <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to see where that person fits best, then place them to raise the org's fit.</div>`;
+              <button class="to-opt-btn" id="to-fit-optimize">⚡ Auto-optimize placements</button>
+              <div class="to-summary-section" style="color:#888;font-size:10px;">${this._lastOptimize != null ? `Auto-optimize applied <b>${this._lastOptimize}</b> improving swap${this._lastOptimize === 1 ? '' : 's'}. ` : ''}Click a role to place its person by hand, or auto-optimize the whole org. Reset clears all placements.</div>`;
+            const optBtn = document.getElementById('to-fit-optimize');
+            if (optBtn) optBtn.onclick = () => runGreedyOptimize();
             return;
           }
 
@@ -960,6 +965,70 @@
           return { avg: w ? wsum / w : null, pctGreen: counted ? Math.round(100 * green / counted) : 0 };
         };
 
+        const roleWeight = n => isTruthy(n.is_mission_critical_position) ? 2 : 1;
+
+        // Greedy org-wide optimizer: from baseline, evaluate every mutually-scored
+        // pairwise swap, score each by (green flips first, then MCP-weighted fit gain),
+        // and apply the best non-overlapping ones. Green-primary matches the goal of
+        // turning red/yellow nodes green; disjoint swaps keep the result readable/undoable.
+        const GREEN_BONUS = 1000;
+        const runGreedyOptimize = () => {
+          // Always compute from the baseline org (discards any manual placements).
+          self._fitScenario.clear();
+          nodes.forEach(n => { n._placedUser = null; n._swapWith = null; });
+
+          const seen  = new Set();
+          const cands = [];
+          realNodes().forEach(A => {
+            if (!Array.isArray(A.employee_role_fits) || !A.employee_role_fits.length) return;
+            const baseA = numOr(A.role_fit_score);
+            if (baseA == null) return;
+            const wA = roleWeight(A);
+            const greenA0 = A.org_health_index === 'High' ? 1 : 0;
+            A.employee_role_fits.forEach(e => {
+              const xid = String(e.talent_role_id);
+              if (xid === String(A.talent_role_id)) return;
+              const key = [String(A.talent_role_id), xid].sort().join('|');
+              if (seen.has(key)) return;
+              const Xn = nodeById(xid);
+              if (!Xn || Xn.data.talent_role_id === '__root__') return;
+              const X = Xn.data;
+              const aFitX = numOr(e.role_fit);
+              const cEntry = fitOf(X, A.talent_role_id);   // target incumbent's fit for A's role
+              const cFitA = cEntry ? numOr(cEntry.role_fit) : null;
+              const baseX = numOr(X.role_fit_score);
+              if (aFitX == null || cFitA == null || baseX == null) return;   // need all four to be scored
+              seen.add(key);
+              const wX = roleWeight(X);
+              const fitGain = (wA * cFitA + wX * aFitX) - (wA * baseA + wX * baseX);
+              const greenAfter = (e.band === 'High' ? 1 : 0) + (cEntry.band === 'High' ? 1 : 0);
+              const greenBefore = greenA0 + (X.org_health_index === 'High' ? 1 : 0);
+              const composite = GREEN_BONUS * (greenAfter - greenBefore) + fitGain;
+              if (composite > 0) cands.push({ composite, aId: A.talent_role_id, xId: xid });
+            });
+          });
+          cands.sort((p, q) => q.composite - p.composite);
+
+          const used = new Set();
+          let applied = 0;
+          cands.forEach(c => {
+            if (used.has(String(c.aId)) || used.has(String(c.xId))) return;
+            const home = nodeById(c.aId), target = nodeById(c.xId);
+            if (!home || !target) return;
+            placeSwap(home, target);
+            used.add(String(c.aId)); used.add(String(c.xId));
+            applied++;
+          });
+
+          self._lastOptimize = applied;
+          paintFit();
+          renderSummary();
+          renderFitPanel();
+          // Zoom out to the whole org so the recoloring is visible at a glance.
+          if (self._svg && self._zoom && self._initT) self._svg.transition().duration(500).call(self._zoom.transform, self._initT);
+          return applied;
+        };
+
         const renderFitPanel = () => {
           const el = document.getElementById('to-cascade');
           if (!el) return;
@@ -1052,6 +1121,7 @@
 
             self._action.querySelectorAll('[data-fit-role]').forEach(item => {
               item.onclick = () => {
+                self._lastOptimize = null;   // a manual placement is no longer "the optimizer's result"
                 const rid = item.getAttribute('data-fit-role');
                 let flyTargets = null;
                 if (data._swapWith != null && String(data._swapWith) === String(rid)) {
@@ -1280,6 +1350,7 @@
           if (self._scenarioMode) return;
           self._hideEmployeeCard();
           self._fitMode = !self._fitMode;
+          self._lastOptimize = null;
           self._action.classList.remove('visible');
           if (self._fitMode) {
             self._preColorMode = self._colorMode;
@@ -1295,6 +1366,7 @@
           if (self._fitMode) {
             self._fitScenario.clear();
             nodes.forEach(n => { n._placedUser = null; n._swapWith = null; });
+            self._lastOptimize = null;
             self._action.classList.remove('visible');
             paintFit();
             renderSummary();
