@@ -93,6 +93,9 @@
           .to-node-label-name { font-size:10px; fill:#777; }
           .to-btn:disabled { cursor:default; opacity:0.45; }
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
+          .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
+          .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
+          .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
@@ -167,6 +170,7 @@
           <button class="to-btn" id="to-btn-bench-risk">Bench Risk</button>
           <span style="width:1px;height:16px;background:#e0e0e0;margin:0 2px;"></span>
           <button class="to-btn" id="to-btn-scenario" title="Simulate bench-risk changes">Simulate</button>
+          <button class="to-btn" id="to-btn-fit" title="Simulate better role placements to raise role fit">Optimize Fit</button>
           <button class="to-btn" id="to-btn-reset" style="display:none;">↺ Reset</button>
         `;
         element.appendChild(toggle);
@@ -234,7 +238,9 @@
         this._cascade      = cascade;
         this._colorMode    = 'org_health';
         this._scenarioMode = false;
+        this._fitMode      = false;
         this._scenario     = new Map();
+        this._fitScenario  = new Map();
         this._gapIdx       = 0;
         this._svg          = null;
         this._nodeG        = null;
@@ -316,6 +322,13 @@
             if (raw == null || raw === '') return [];
             if (Array.isArray(raw)) return raw;
             try { return JSON.parse(raw); } catch (e) { return []; }
+          })(),
+          // The fit matrix for this incumbent: [{talent_role_id, talent_role_name, role_fit, band}]
+          employee_role_fits:  (() => {
+            const raw = pick(row, 'employee_role_fits');
+            if (raw == null || raw === '') return [];
+            if (Array.isArray(raw)) return raw;
+            try { return JSON.parse(raw); } catch (e) { return []; }
           })()
         }));
 
@@ -337,7 +350,7 @@
             employee_name: '', talent_role_name: '', parent_talent_role_name: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
             is_mission_critical_position: false, is_talent: false, role_fit_score: null,
-            successor_role_fit_scores: [], candidate_role_fit_scores: []
+            successor_role_fit_scores: [], candidate_role_fit_scores: [], employee_role_fits: []
           });
           roots.forEach(n => { n.parent_talent_role_id = '__root__'; });
         }
@@ -381,11 +394,13 @@
         };
 
         const scenario = this._scenario;
+        const fitScenario = this._fitScenario;
         nodes.forEach(n => {
           if (n.talent_role_id === '__root__') {
             n._benchTarget = null; n._baselineTarget = null; n._baselineBand = 'N/A'; n._baselineSuccessors = 0;
             n._simSuccessors = 0; n._vacant = false; n._simBand = 'N/A';
             n._filledBy = null; n._backfill = false; n._newHire = false;
+            n._placedUser = null; n._swapWith = null;
             return;
           }
           const baseTarget = (n.bench_strength_target != null && n.bench_strength_target > 0)
@@ -407,9 +422,17 @@
           n._backfill      = ov ? !!ov.backfill : false;
           n._newHire       = ov ? !!ov.newHire : false;
           n._simBand       = computeBenchRisk(n._simSuccessors, n._benchTarget);
+          // Re-apply any active fit-placement (swap) override for this role.
+          const fv = fitScenario.get(n.talent_role_id);
+          n._placedUser = (fv && fv.placedUser) ? fv.placedUser : null;
+          n._swapWith   = (fv && fv.swapWith != null) ? fv.swapWith : null;
         });
 
         const nodeColor = d => {
+          if (this._fitMode) {
+            const band = d.data._placedUser ? d.data._placedUser.band : (d.data.org_health_index || 'N/A');
+            return OHI_COLORS[band] || OHI_COLORS['N/A'];
+          }
           if (this._scenarioMode) {
             if (d.data._newHire)  return NEWHIRE_FILL;
             if (d.data._filledBy) return FILLED_FILL;
@@ -444,6 +467,34 @@
             return g2;
           };
           const el = document.getElementById('to-summary');
+
+          if (this._fitMode) {
+            const base = computeOrgFit(false);
+            const sim  = computeOrgFit(true);
+            const placements = rn.filter(n => n._placedUser).length;
+            const numArrow = (a, b) => {
+              if (a == null || b == null) return b != null ? Math.round(b) : '—';
+              if (Math.abs(b - a) < 0.5) return `<span class="to-arrow flat">${Math.round(b)}</span>`;
+              return `<span class="to-arrow ${b > a ? 'good' : 'bad'}">${Math.round(b)} ${b > a ? '▲' : '▼'}</span>`;
+            };
+            const pctArrow = (a, b) => a === b
+              ? `<span class="to-arrow flat">${b}%</span>`
+              : `<span class="to-arrow ${b > a ? 'good' : 'bad'}">${b}% ${b > a ? '▲' : '▼'}</span>`;
+            el.innerHTML = `
+              <div class="to-summary-title">Organizational Role Fit</div>
+              <div class="to-summary-row"><span class="to-summary-label">Avg fit (MCP-wtd)</span><span class="to-summary-value">${base.avg != null ? Math.round(base.avg) : '—'} → ${numArrow(base.avg, sim.avg)}</span></div>
+              <div class="to-summary-row"><span class="to-summary-label">% Green</span><span class="to-summary-value">${base.pctGreen}% → ${pctArrow(base.pctGreen, sim.pctGreen)}</span></div>
+              <div class="to-summary-section">
+                <div class="to-summary-section-title">Node bands (simulated)</div>
+                ${['High', 'Medium', 'Low', 'N/A'].map(k => {
+                  const cnt = rn.filter(n => (n._placedUser ? n._placedUser.band : (n.org_health_index || 'N/A')) === k).length;
+                  return `<div class="to-summary-dot-row"><span style="display:flex;align-items:center;gap:5px;">${dot(OHI_COLORS[k] || '#95a5a6')}<span class="to-summary-label">${k}</span></span><span class="to-summary-value">${cnt}</span></div>`;
+                }).join('')}
+              </div>
+              <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
+              <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to see where that person fits best, then place them to raise the org's fit.</div>`;
+            return;
+          }
 
           if (!this._scenarioMode) {
             const br = benchOf('_baselineBand');
@@ -585,6 +636,8 @@
             if (d.data.talent_role_id === '__root__') return;
             if (self._scenarioMode) {
               showActionPopover(event, d);
+            } else if (self._fitMode) {
+              showFitExplorer(event, d);
             } else {
               self._showEmployeeCard(d, OHI_COLORS, BENCH_RISK_COLORS);
             }
@@ -630,6 +683,7 @@
 
         // ══ Bench Risk simulation: interactions ═════════════════════
         const btnScenario = document.getElementById('to-btn-scenario');
+        const btnFit      = document.getElementById('to-btn-fit');
         const btnReset    = document.getElementById('to-btn-reset');
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
@@ -848,6 +902,187 @@
           });
         };
 
+        // ══ Role-fit placement simulation ("Optimize Fit") ═══════════
+        // Move a person to a role where they fit better, modelled as a SWAP with that
+        // role's incumbent so the org stays fully staffed and the Org Role Fit delta is
+        // well-defined. Fit/band for each (person, target role) comes from the
+        // employee_role_fits matrix each node carries for its own incumbent.
+        const numOr    = v => { const n = Number(v); return isFinite(n) ? n : null; };
+        const nodeById = id => root.descendants().find(v => String(v.data.talent_role_id) === String(id)) || null;
+        const fitOf    = (data, roleId) => {
+          const arr = Array.isArray(data.employee_role_fits) ? data.employee_role_fits : [];
+          return arr.find(e => String(e.talent_role_id) === String(roleId)) || null;
+        };
+        const persistFit  = data => self._fitScenario.set(data.talent_role_id, { placedUser: data._placedUser, swapWith: data._swapWith });
+        const clearFitRole = data => { data._placedUser = null; data._swapWith = null; self._fitScenario.delete(data.talent_role_id); };
+        const undoSwap = data => {
+          const partnerId = data._swapWith;
+          clearFitRole(data);
+          if (partnerId != null) { const p = nodeById(partnerId); if (p) clearFitRole(p.data); }
+        };
+        // Swap the home node's original incumbent into the target role (and vice-versa).
+        const placeSwap = (homeNode, targetNode) => {
+          if (!homeNode || !targetNode || homeNode === targetNode) return;
+          undoSwap(homeNode.data);
+          undoSwap(targetNode.data);
+          const A = homeNode.data, X = targetNode.data;
+          const aFitX = fitOf(A, X.talent_role_id);   // A's fit for the target role
+          const cFitA = fitOf(X, A.talent_role_id);   // target incumbent's fit for A's role
+          if (!aFitX) return;
+          X._placedUser = { user_id: A.user_id, name: A.employee_name, role_fit: numOr(aFitX.role_fit), band: aFitX.band || 'N/A', fromRoleId: A.talent_role_id, fromRoleName: A.talent_role_name };
+          A._placedUser = { user_id: X.user_id, name: X.employee_name, role_fit: cFitA ? numOr(cFitA.role_fit) : null, band: cFitA ? (cFitA.band || 'N/A') : 'N/A', fromRoleId: X.talent_role_id, fromRoleName: X.talent_role_name };
+          A._swapWith = X.talent_role_id;
+          X._swapWith = A.talent_role_id;
+          persistFit(A); persistFit(X);
+        };
+
+        const paintFit = () => {
+          nodeG.style('opacity', 1);
+          linkPaths.attr('stroke', '#ccc').attr('stroke-opacity', 1);
+          nodeG.selectAll('circle:not(.to-node-circle)')
+            .attr('fill',             d => nodeColor(d))
+            .attr('stroke',           d => d.data._placedUser ? '#16a085' : '#fff')
+            .attr('stroke-dasharray', null)
+            .attr('stroke-width',     d => d.data._placedUser ? 2.5 : (d.depth === 0 ? 3 : 1.5));
+        };
+
+        // Organizational Role Fit: MCP-weighted mean role_fit + % of roles in the green band.
+        const computeOrgFit = sim => {
+          let wsum = 0, w = 0, green = 0, counted = 0;
+          realNodes().forEach(n => {
+            const band = sim && n._placedUser ? n._placedUser.band    : (n.org_health_index || 'N/A');
+            const fit  = sim && n._placedUser ? n._placedUser.role_fit : numOr(n.role_fit_score);
+            const weight = isTruthy(n.is_mission_critical_position) ? 2 : 1;
+            if (fit != null) { wsum += fit * weight; w += weight; }
+            if (band === 'High') green++;
+            counted++;
+          });
+          return { avg: w ? wsum / w : null, pctGreen: counted ? Math.round(100 * green / counted) : 0 };
+        };
+
+        const renderFitPanel = () => {
+          const el = document.getElementById('to-cascade');
+          if (!el) return;
+          if (!self._fitMode) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+          const placed = root.descendants().filter(v => v.data.talent_role_id !== '__root__' && v.data._placedUser);
+          if (!placed.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+          placed.sort((a, b) => String(a.data.talent_role_name || '').localeCompare(String(b.data.talent_role_name || '')));
+          el.innerHTML = `
+            <div class="to-casc-head">Placements (${placed.length})</div>
+            <div class="to-casc-list">
+              ${placed.map(v => {
+                const pu    = v.data._placedUser;
+                const band  = pu.band || 'N/A';
+                const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
+                const role  = v.data.talent_role_name || '—';
+                const who   = pu.name || '—';
+                const ci    = String(who).split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                return `
+                  <div class="to-casc-row" data-role="${escAttr(v.data.talent_role_id)}">
+                    <span class="to-casc-av" style="background:${color}">${ci}</span>
+                    <span class="to-casc-body">
+                      <span class="to-casc-role" title="${escAttr(role)}">${role}</span>
+                      <span class="to-casc-who" title="${escAttr(who)}">← ${who}${pu.role_fit != null ? ` · fit ${pu.role_fit}` : ''}</span>
+                    </span>
+                    <span class="to-casc-chip" style="color:${color};border-color:${color};">${band}</span>
+                  </div>`;
+              }).join('')}
+            </div>`;
+          el.classList.add('visible');
+          el.querySelectorAll('[data-role]').forEach(rowEl => {
+            rowEl.onclick = () => { const v = nodeById(rowEl.getAttribute('data-role')); if (v) flyToNodes([v], { ping: [v] }); };
+          });
+        };
+
+        // Route the shared left-docked panel to whichever simulation is active.
+        const renderChangesPanel = () => {
+          if (self._scenarioMode) return renderCascade();
+          if (self._fitMode)      return renderFitPanel();
+          const el = document.getElementById('to-cascade');
+          if (el) { el.classList.remove('visible'); el.innerHTML = ''; }
+        };
+
+        // Explorer popover: for a node's ORIGINAL incumbent, rank the roles they've been
+        // scored on by fit; click a role to place them there (swap), or their current spot to undo.
+        function showFitExplorer(event, d) {
+          const data      = d.data;
+          const ownRoleId = data.talent_role_id;
+          const esc       = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
+
+          const render = () => {
+            const atId    = data._swapWith != null ? data._swapWith : ownRoleId;   // where they currently sit
+            const curFit  = fitOf(data, atId) || (atId === ownRoleId ? { role_fit: numOr(data.role_fit_score), band: data.org_health_index || 'N/A' } : null);
+            const curBand = curFit ? (curFit.band || 'N/A') : 'N/A';
+            const curColor = OHI_COLORS[curBand] || OHI_COLORS['N/A'];
+            const initials = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
+            const rows = (Array.isArray(data.employee_role_fits) ? data.employee_role_fits.slice() : [])
+              .sort((a, b) => (numOr(b.role_fit) ?? -1) - (numOr(a.role_fit) ?? -1));
+
+            self._action.innerHTML = `
+              <div class="to-tt-header">
+                <div class="to-tt-avatar" style="background:${curColor}">${initials}</div>
+                <div>
+                  <div class="to-tt-name">${data.employee_name || '—'}</div>
+                  <div class="to-tt-role">Currently: ${esc(fitOf(data, atId) ? (nodeById(atId) ? nodeById(atId).data.talent_role_name : data.talent_role_name) : data.talent_role_name)}</div>
+                </div>
+              </div>
+              <div class="to-act-note" style="padding:2px 0 6px;">Best-fit roles for this person — click one to place them there.</div>
+              <div class="to-impact" style="border-color:${curColor};">
+                <div class="to-impact-sev" style="color:${curColor};">ROLE FIT BY ROLE</div>
+                ${rows.length ? rows.map(r => {
+                  const rid   = String(r.talent_role_id);
+                  const band  = r.band || 'N/A';
+                  const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
+                  const sc    = numOr(r.role_fit);
+                  const pct   = sc != null ? Math.min(100, Math.max(0, Math.round(sc))) : 0;
+                  const isOwn = rid === String(ownRoleId);
+                  const isAt  = data._swapWith != null && rid === String(data._swapWith);
+                  const chip  = isAt ? '<span class="to-fit-here">PLACED</span>' : (isOwn ? '<span class="to-fit-cur">HOME</span>' : '');
+                  return `
+                    <div class="to-rec-item to-rec-pick" data-fit-role="${esc(rid)}" style="${isAt ? 'background:rgba(63,140,255,0.16);' : ''}">
+                      <span class="to-rec-av" style="background:${color}">${(r.talent_role_name || '?').slice(0, 1).toUpperCase()}</span>
+                      <span class="to-rec-name" title="${esc(r.talent_role_name)}">${r.talent_role_name || '—'}${chip}</span>
+                      <span class="to-rec-score">
+                        <span class="to-score-wrap" style="width:48px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${color};display:block;"></span></span>
+                        <b>${sc != null ? sc : '—'}</b>
+                      </span>
+                    </div>`;
+                }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No role-fit scores available for this person.<br>Add <b>employee_role_fits</b> to the tile query.</div>`}
+              </div>`;
+
+            self._action.querySelectorAll('[data-fit-role]').forEach(item => {
+              item.onclick = () => {
+                const rid = item.getAttribute('data-fit-role');
+                let flyTargets = null;
+                if (data._swapWith != null && String(data._swapWith) === String(rid)) {
+                  undoSwap(data);                                   // click current placement → undo
+                } else if (String(rid) === String(ownRoleId)) {
+                  if (data._swapWith != null) undoSwap(data);       // click HOME → move back home
+                } else {
+                  const target = nodeById(rid);
+                  placeSwap(d, target);
+                  if (target) flyTargets = [d, target];
+                }
+                paintFit();
+                renderSummary();
+                renderFitPanel();
+                render();
+                if (flyTargets) flyToNodes(flyTargets, { ping: [flyTargets[1]] });
+              };
+            });
+          };
+
+          render();
+
+          const pad = 12, aw = 252, ah = self._action.offsetHeight || 240;
+          let left = event.clientX + pad, top = event.clientY + pad;
+          if (left + aw > window.innerWidth)  left = event.clientX - aw - pad;
+          if (top  + ah > window.innerHeight) top  = window.innerHeight - ah - pad;
+          self._action.style.left = Math.max(8, left) + 'px';
+          self._action.style.top  = Math.max(8, top)  + 'px';
+          self._action.classList.add('visible');
+        }
+
         // Interactive action card: simulate a departure, then pick a successor to backfill.
         function showActionPopover(event, d) {
           const data   = d.data;
@@ -999,28 +1234,38 @@
           self._action.classList.add('visible');
         }
 
-        const applyScenarioMode = () => {
+        // Reflect whichever simulation (if any) is active. The two are mutually exclusive.
+        const applyActiveMode = () => {
           btnScenario.classList.toggle('scenario-on', self._scenarioMode);
-          btnReset.style.display = self._scenarioMode ? '' : 'none';
-          btnOhi.disabled   = self._scenarioMode;
-          btnBench.disabled = self._scenarioMode;
+          btnFit.classList.toggle('fit-on', self._fitMode);
+          btnReset.style.display = (self._scenarioMode || self._fitMode) ? '' : 'none';
+          btnOhi.disabled   = self._scenarioMode || self._fitMode;
+          btnBench.disabled = self._scenarioMode || self._fitMode;
+          btnScenario.disabled = self._fitMode;
+          btnFit.disabled      = self._scenarioMode;
+
           if (self._scenarioMode) {
             self._colorMode = 'bench_risk';
-            btnBench.classList.add('active');
-            btnOhi.classList.remove('active');
+            btnBench.classList.add('active'); btnOhi.classList.remove('active');
             paintScenario();
+          } else if (self._fitMode) {
+            self._colorMode = 'org_health';
+            btnOhi.classList.add('active'); btnBench.classList.remove('active');
+            paintFit();
           } else {
             self._action.classList.remove('visible');
             clearScenarioPaint();
           }
           renderColorLegend();
           renderSummary();
-          renderCascade();
+          renderChangesPanel();
         };
 
         btnScenario.onclick = () => {
+          if (self._fitMode) return;
           self._hideEmployeeCard();
           self._scenarioMode = !self._scenarioMode;
+          self._action.classList.remove('visible');
           if (self._scenarioMode) {
             self._preColorMode = self._colorMode;
           } else if (self._preColorMode) {
@@ -1028,10 +1273,34 @@
             btnOhi.classList.toggle('active', self._colorMode !== 'bench_risk');
             btnBench.classList.toggle('active', self._colorMode === 'bench_risk');
           }
-          applyScenarioMode();
+          applyActiveMode();
+        };
+
+        btnFit.onclick = () => {
+          if (self._scenarioMode) return;
+          self._hideEmployeeCard();
+          self._fitMode = !self._fitMode;
+          self._action.classList.remove('visible');
+          if (self._fitMode) {
+            self._preColorMode = self._colorMode;
+          } else if (self._preColorMode) {
+            self._colorMode = self._preColorMode;
+            btnOhi.classList.toggle('active', self._colorMode !== 'bench_risk');
+            btnBench.classList.toggle('active', self._colorMode === 'bench_risk');
+          }
+          applyActiveMode();
         };
 
         btnReset.onclick = () => {
+          if (self._fitMode) {
+            self._fitScenario.clear();
+            nodes.forEach(n => { n._placedUser = null; n._swapWith = null; });
+            self._action.classList.remove('visible');
+            paintFit();
+            renderSummary();
+            renderFitPanel();
+            return;
+          }
           self._scenario.clear();
           nodes.forEach(n => {
             n._simSuccessors = n._baselineSuccessors;
@@ -1050,7 +1319,7 @@
         };
 
         // Reflect the current mode after every (re-)render, and paint the summary.
-        applyScenarioMode();
+        applyActiveMode();
 
         // ── Search / highlight ─────────────────────────────────────
         const labelG = g.append('g').attr('class', 'to-labels');
