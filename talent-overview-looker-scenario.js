@@ -98,6 +98,17 @@
           .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-opt-btn { width:100%; margin-top:8px; padding:6px 8px; border:none; border-radius:5px; background:#16a085; color:#fff; font-size:11px; font-weight:600; cursor:pointer; }
           .to-opt-btn:hover { background:#12876f; }
+          .to-tabs { display:flex; gap:4px; margin-top:8px; }
+          .to-tab { flex:1 1 0; font-size:11px; padding:4px 6px; border-radius:4px; cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:rgba(255,255,255,0.06); color:rgba(255,255,255,0.75); }
+          .to-tab:hover { background:rgba(255,255,255,0.16); }
+          .to-tab.on { background:#16a085; border-color:#16a085; color:#fff; font-weight:600; }
+          .to-fit-scroll { max-height:236px; overflow-y:auto; }
+          .to-rec-body { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+          .to-rec-nm { font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-rec-sub { font-size:10px; color:rgba(255,255,255,0.45); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-rec-delta { font-size:10px; font-weight:700; color:rgba(255,255,255,0.5); }
+          .to-rec-delta.up { color:#2ecc71; }
+          .to-rec-delta.down { color:#e74c3c; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
@@ -241,6 +252,7 @@
         this._colorMode    = 'org_health';
         this._scenarioMode = false;
         this._fitMode      = false;
+        this._fitTab       = 'role';
         this._scenario     = new Map();
         this._fitScenario  = new Map();
         this._gapIdx       = 0;
@@ -913,11 +925,58 @@
         // well-defined. Fit/band for each (person, target role) comes from the
         // employee_role_fits matrix each node carries for its own incumbent.
         const numOr    = v => { const n = Number(v); return isFinite(n) ? n : null; };
-        const nodeById = id => root.descendants().find(v => String(v.data.talent_role_id) === String(id)) || null;
+        // Map-backed lookup: the role-centric list resolves a node per row, so a linear
+        // scan here would compound badly on a large org.
+        const nodeIndex = (() => {
+          const m = new Map();
+          root.descendants().forEach(v => m.set(String(v.data.talent_role_id), v));
+          return m;
+        })();
+        const nodeById = id => nodeIndex.get(String(id)) || null;
         const fitOf    = (data, roleId) => {
           const arr = Array.isArray(data.employee_role_fits) ? data.employee_role_fits : [];
           return arr.find(e => String(e.talent_role_id) === String(roleId)) || null;
         };
+
+        // ── Inverted (role-centric) fit index ──────────────────────
+        // employee_role_fits is employee-centric (each node carries its own incumbent's
+        // fits across roles). Scanning every node once inverts it into
+        //   roleId -> [{name, user_id, homeRoleId, homeRoleName, fit, band}] (best first)
+        // i.e. "everyone scored for THIS role", which is what you want when judging a
+        // role rather than a person. Only people who hold a seat in the chart appear —
+        // exactly the set we can legally swap with.
+        const roleCandidateIndex = (() => {
+          const idx = new Map();
+          realNodes().forEach(P => {
+            const arr = Array.isArray(P.employee_role_fits) ? P.employee_role_fits : [];
+            arr.forEach(e => {
+              const rid = String(e.talent_role_id);
+              if (!idx.has(rid)) idx.set(rid, []);
+              idx.get(rid).push({
+                name: P.employee_name, user_id: P.user_id,
+                homeRoleId: P.talent_role_id, homeRoleName: P.talent_role_name,
+                fit: numOr(e.role_fit), band: e.band || 'N/A'
+              });
+            });
+          });
+          idx.forEach(list => list.sort((a, b) => (b.fit ?? -1) - (a.fit ?? -1)));
+          return idx;
+        })();
+        const candidatesForRole = roleId => roleCandidateIndex.get(String(roleId)) || [];
+
+        // Who is sitting in this role right now (after any swaps), and where a given
+        // person currently sits (their home seat unless they've been swapped away).
+        const currentOccupantOf = data => data._placedUser
+          ? { user_id: data._placedUser.user_id, name: data._placedUser.name, homeRoleId: data._placedUser.fromRoleId,
+              fit: data._placedUser.role_fit, band: data._placedUser.band || 'N/A' }
+          : { user_id: data.user_id, name: data.employee_name, homeRoleId: data.talent_role_id,
+              fit: numOr(data.role_fit_score), band: data.org_health_index || 'N/A' };
+        const currentSeatOf = homeRoleId => {
+          const h = nodeById(homeRoleId);
+          if (!h) return String(homeRoleId);
+          return String(h.data._swapWith != null ? h.data._swapWith : homeRoleId);
+        };
+
         const persistFit  = data => self._fitScenario.set(data.talent_role_id, { placedUser: data._placedUser, swapWith: data._swapWith });
         const clearFitRole = data => { data._placedUser = null; data._swapWith = null; self._fitScenario.delete(data.talent_role_id); };
         const undoSwap = data => {
@@ -1071,73 +1130,140 @@
           if (el) { el.classList.remove('visible'); el.innerHTML = ''; }
         };
 
-        // Explorer popover: for a node's ORIGINAL incumbent, rank the roles they've been
-        // scored on by fit; click a role to place them there (swap), or their current spot to undo.
+        // Explorer popover with two lenses on the clicked node:
+        //   "This role"   → everyone scored for THIS role, best fit first (inverted matrix)
+        //   "This person" → every role the CURRENT occupant is scored for, best fit first
+        // Either way, clicking a row performs the swap and the org-fit delta updates live.
         function showFitExplorer(event, d) {
           const data      = d.data;
-          const ownRoleId = data.talent_role_id;
+          const ownRoleId = String(data.talent_role_id);
           const esc       = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
 
+          const applyAndRefresh = (flyTargets, rerender) => {
+            self._lastOptimize = null;   // a manual placement is no longer "the optimizer's result"
+            paintFit();
+            renderSummary();
+            renderFitPanel();
+            rerender();
+            if (flyTargets && flyTargets[1]) flyToNodes(flyTargets, { ping: [flyTargets[1]] });
+          };
+
           const render = () => {
-            const atId    = data._swapWith != null ? data._swapWith : ownRoleId;   // where they currently sit
-            const curFit  = fitOf(data, atId) || (atId === ownRoleId ? { role_fit: numOr(data.role_fit_score), band: data.org_health_index || 'N/A' } : null);
-            const curBand = curFit ? (curFit.band || 'N/A') : 'N/A';
-            const curColor = OHI_COLORS[curBand] || OHI_COLORS['N/A'];
-            const initials = (data.employee_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
-            const rows = (Array.isArray(data.employee_role_fits) ? data.employee_role_fits.slice() : [])
+            const tab      = self._fitTab === 'person' ? 'person' : 'role';
+            const occ      = currentOccupantOf(data);                 // who sits here now
+            const occBand  = occ.band || 'N/A';
+            const occColor = OHI_COLORS[occBand] || OHI_COLORS['N/A'];
+            const initials = (occ.name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
+
+            // ── Lens A: candidates for THIS role ──
+            const cands   = candidatesForRole(ownRoleId);
+            const roleRows = cands.length ? cands.map(c => {
+              const band  = c.band || 'N/A';
+              const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
+              const pct   = c.fit != null ? Math.min(100, Math.max(0, Math.round(c.fit))) : 0;
+              const seat  = currentSeatOf(c.homeRoleId);
+              const here  = seat === ownRoleId;
+              const moved = seat !== String(c.homeRoleId);
+              const dlt   = (c.fit != null && occ.fit != null) ? Math.round(c.fit - occ.fit) : null;
+              const seatNode = nodeById(seat);
+              const seatName = here ? 'in this role now'
+                             : `now: ${(seatNode ? seatNode.data.talent_role_name : c.homeRoleName) || '—'}`;
+              const ci    = (c.name || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+              return `
+                <div class="to-rec-item to-rec-pick" data-pick-person="${esc(c.homeRoleId)}" style="${here ? 'background:rgba(63,140,255,0.16);' : ''}">
+                  <span class="to-rec-av" style="background:${color}">${ci}</span>
+                  <span class="to-rec-body">
+                    <span class="to-rec-nm">${c.name || '—'}${here ? '<span class="to-fit-here">IN ROLE</span>' : (moved ? '<span class="to-fit-cur">MOVED</span>' : '')}</span>
+                    <span class="to-rec-sub" title="${esc(seatName)}">${seatName}</span>
+                  </span>
+                  <span class="to-rec-score">
+                    ${dlt != null && !here ? `<span class="to-rec-delta ${dlt > 0 ? 'up' : (dlt < 0 ? 'down' : '')}">${dlt > 0 ? '+' : ''}${dlt}</span>` : ''}
+                    <span class="to-score-wrap" style="width:40px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${color};display:block;"></span></span>
+                    <b>${c.fit != null ? c.fit : '—'}</b>
+                  </span>
+                </div>`;
+            }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No one has been scored for this role.<br>Ensure <b>employee_role_fits</b> is in the tile query.</div>`;
+
+            // ── Lens B: roles for the CURRENT occupant ──
+            const occHome = nodeById(occ.homeRoleId);
+            const occData = occHome ? occHome.data : data;
+            const pRows   = (Array.isArray(occData.employee_role_fits) ? occData.employee_role_fits.slice() : [])
               .sort((a, b) => (numOr(b.role_fit) ?? -1) - (numOr(a.role_fit) ?? -1));
+            const occSeat = currentSeatOf(occ.homeRoleId);
+            const personRows = pRows.length ? pRows.map(r => {
+              const rid   = String(r.talent_role_id);
+              const band  = r.band || 'N/A';
+              const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
+              const sc    = numOr(r.role_fit);
+              const pct   = sc != null ? Math.min(100, Math.max(0, Math.round(sc))) : 0;
+              const isAt  = rid === occSeat;
+              const isHome = rid === String(occ.homeRoleId);
+              const chip  = isAt ? '<span class="to-fit-here">CURRENT</span>' : (isHome ? '<span class="to-fit-cur">HOME</span>' : '');
+              return `
+                <div class="to-rec-item to-rec-pick" data-pick-role="${esc(rid)}" style="${isAt ? 'background:rgba(63,140,255,0.16);' : ''}">
+                  <span class="to-rec-av" style="background:${color}">${(r.talent_role_name || '?').slice(0, 1).toUpperCase()}</span>
+                  <span class="to-rec-name" title="${esc(r.talent_role_name)}">${r.talent_role_name || '—'}${chip}</span>
+                  <span class="to-rec-score">
+                    <span class="to-score-wrap" style="width:44px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${color};display:block;"></span></span>
+                    <b>${sc != null ? sc : '—'}</b>
+                  </span>
+                </div>`;
+            }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No role-fit scores available for this person.</div>`;
 
             self._action.innerHTML = `
               <div class="to-tt-header">
-                <div class="to-tt-avatar" style="background:${curColor}">${initials}</div>
+                <div class="to-tt-avatar" style="background:${occColor}">${initials}</div>
                 <div>
-                  <div class="to-tt-name">${data.employee_name || '—'}</div>
-                  <div class="to-tt-role">Currently: ${esc(fitOf(data, atId) ? (nodeById(atId) ? nodeById(atId).data.talent_role_name : data.talent_role_name) : data.talent_role_name)}</div>
+                  <div class="to-tt-name">${data.talent_role_name || '—'}</div>
+                  <div class="to-tt-role">Now: ${esc(occ.name || '—')}${occ.fit != null ? ` · fit ${occ.fit}` : ''}</div>
                 </div>
               </div>
-              <div class="to-act-note" style="padding:2px 0 6px;">Best-fit roles for this person — click one to place them there.</div>
-              <div class="to-impact" style="border-color:${curColor};">
-                <div class="to-impact-sev" style="color:${curColor};">ROLE FIT BY ROLE</div>
-                ${rows.length ? rows.map(r => {
-                  const rid   = String(r.talent_role_id);
-                  const band  = r.band || 'N/A';
-                  const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
-                  const sc    = numOr(r.role_fit);
-                  const pct   = sc != null ? Math.min(100, Math.max(0, Math.round(sc))) : 0;
-                  const isOwn = rid === String(ownRoleId);
-                  const isAt  = data._swapWith != null && rid === String(data._swapWith);
-                  const chip  = isAt ? '<span class="to-fit-here">PLACED</span>' : (isOwn ? '<span class="to-fit-cur">HOME</span>' : '');
-                  return `
-                    <div class="to-rec-item to-rec-pick" data-fit-role="${esc(rid)}" style="${isAt ? 'background:rgba(63,140,255,0.16);' : ''}">
-                      <span class="to-rec-av" style="background:${color}">${(r.talent_role_name || '?').slice(0, 1).toUpperCase()}</span>
-                      <span class="to-rec-name" title="${esc(r.talent_role_name)}">${r.talent_role_name || '—'}${chip}</span>
-                      <span class="to-rec-score">
-                        <span class="to-score-wrap" style="width:48px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${color};display:block;"></span></span>
-                        <b>${sc != null ? sc : '—'}</b>
-                      </span>
-                    </div>`;
-                }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No role-fit scores available for this person.<br>Add <b>employee_role_fits</b> to the tile query.</div>`}
+              <div class="to-tabs">
+                <button class="to-tab ${tab === 'role' ? 'on' : ''}" data-tab="role">This role</button>
+                <button class="to-tab ${tab === 'person' ? 'on' : ''}" data-tab="person">This person</button>
+              </div>
+              <div class="to-impact" style="border-color:${occColor};margin-top:6px;">
+                <div class="to-impact-sev" style="color:${occColor};">${tab === 'role' ? `BEST FIT FOR THIS ROLE (${cands.length})` : 'BEST ROLES FOR THIS PERSON'}</div>
+                <div class="to-act-note" style="padding:0 0 4px;">${tab === 'role' ? 'Click a person to move them into this role.' : 'Click a role to move this person there.'}</div>
+                <div class="to-fit-scroll">${tab === 'role' ? roleRows : personRows}</div>
               </div>`;
 
-            self._action.querySelectorAll('[data-fit-role]').forEach(item => {
+            self._action.querySelectorAll('[data-tab]').forEach(btn => {
+              btn.onclick = () => { self._fitTab = btn.getAttribute('data-tab'); render(); };
+            });
+
+            // Role lens: pick a PERSON (identified by their home role) for this role.
+            self._action.querySelectorAll('[data-pick-person]').forEach(item => {
               item.onclick = () => {
-                self._lastOptimize = null;   // a manual placement is no longer "the optimizer's result"
-                const rid = item.getAttribute('data-fit-role');
-                let flyTargets = null;
-                if (data._swapWith != null && String(data._swapWith) === String(rid)) {
-                  undoSwap(data);                                   // click current placement → undo
-                } else if (String(rid) === String(ownRoleId)) {
-                  if (data._swapWith != null) undoSwap(data);       // click HOME → move back home
+                const homeId = item.getAttribute('data-pick-person');
+                const seat   = currentSeatOf(homeId);
+                let fly = null;
+                if (seat === ownRoleId) {
+                  undoSwap(data);                       // already here → put things back
+                } else {
+                  const homeNode = nodeById(homeId);
+                  if (homeNode === d)      undoSwap(data);           // their home is this seat → bring home
+                  else if (homeNode)     { placeSwap(homeNode, d); fly = [homeNode, d]; }
+                }
+                applyAndRefresh(fly, render);
+              };
+            });
+
+            // Person lens: pick a ROLE for the current occupant.
+            self._action.querySelectorAll('[data-pick-role]').forEach(item => {
+              item.onclick = () => {
+                const rid = item.getAttribute('data-pick-role');
+                let fly = null;
+                if (rid === occSeat) {
+                  undoSwap(occData);                    // click current seat → undo
+                } else if (rid === String(occ.homeRoleId)) {
+                  undoSwap(occData);                    // click HOME → move back home
                 } else {
                   const target = nodeById(rid);
-                  placeSwap(d, target);
-                  if (target) flyTargets = [d, target];
+                  const home   = nodeById(occ.homeRoleId);
+                  if (home && target) { placeSwap(home, target); fly = [home, target]; }
                 }
-                paintFit();
-                renderSummary();
-                renderFitPanel();
-                render();
-                if (flyTargets) flyToNodes(flyTargets, { ping: [flyTargets[1]] });
+                applyAndRefresh(fly, render);
               };
             });
           };
