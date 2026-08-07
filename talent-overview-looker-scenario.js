@@ -262,7 +262,8 @@
         this._fitTab       = 'role';
         this._divFilter    = true;
         this._scenario     = new Map();
-        this._fitScenario  = new Map();
+        // seat roleId -> home roleId of the person now occupying it (non-identity only)
+        this._fitAssign    = new Map();
         this._gapIdx       = 0;
         this._svg          = null;
         this._nodeG        = null;
@@ -418,13 +419,12 @@
         };
 
         const scenario = this._scenario;
-        const fitScenario = this._fitScenario;
         nodes.forEach(n => {
+          n._placedUser = null;   // rehydrated from the assignment map once the fit engine is defined
           if (n.talent_role_id === '__root__') {
             n._benchTarget = null; n._baselineTarget = null; n._baselineBand = 'N/A'; n._baselineSuccessors = 0;
             n._simSuccessors = 0; n._vacant = false; n._simBand = 'N/A';
             n._filledBy = null; n._backfill = false; n._newHire = false;
-            n._placedUser = null; n._swapWith = null;
             return;
           }
           const baseTarget = (n.bench_strength_target != null && n.bench_strength_target > 0)
@@ -446,10 +446,6 @@
           n._backfill      = ov ? !!ov.backfill : false;
           n._newHire       = ov ? !!ov.newHire : false;
           n._simBand       = computeBenchRisk(n._simSuccessors, n._benchTarget);
-          // Re-apply any active fit-placement (swap) override for this role.
-          const fv = fitScenario.get(n.talent_role_id);
-          n._placedUser = (fv && fv.placedUser) ? fv.placedUser : null;
-          n._swapWith   = (fv && fv.swapWith != null) ? fv.swapWith : null;
         });
 
         const nodeColor = d => {
@@ -1009,34 +1005,71 @@
               fit: data._placedUser.role_fit, band: data._placedUser.band || 'N/A' }
           : { user_id: data.user_id, name: data.employee_name, homeRoleId: data.talent_role_id,
               fit: numOr(data.role_fit_score), band: data.org_health_index || 'N/A' };
-        const currentSeatOf = homeRoleId => {
-          const h = nodeById(homeRoleId);
-          if (!h) return String(homeRoleId);
-          return String(h.data._swapWith != null ? h.data._swapWith : homeRoleId);
+        // ── Assignment model ───────────────────────────────────────
+        // `_fitAssign` maps seat roleId -> home roleId of whoever occupies it (only
+        // entries that differ from the original incumbent are stored). Every action is a
+        // transposition applied to the CURRENT assignment, so composing them yields
+        // ARBITRARY permutations — including 3-way rotations. (The previous model stored
+        // swaps relative to baseline, which could only express disjoint 2-cycles: moving
+        // a already-moved person then wrongly snapped their partner back home.)
+        const occupantOf = seatId => String(self._fitAssign.get(String(seatId)) ?? seatId);
+        let seatIndex = new Map();
+        const rebuildSeatIndex = () => {
+          seatIndex = new Map();
+          self._fitAssign.forEach((person, seat) => seatIndex.set(String(person), String(seat)));
+        };
+        rebuildSeatIndex();
+        // Where a person (identified by their home role) is sitting right now.
+        const seatOf = personHome => seatIndex.get(String(personHome)) || String(personHome);
+
+        const setOccupant = (seatId, personHome) => {
+          if (String(seatId) === String(personHome)) self._fitAssign.delete(String(seatId));
+          else self._fitAssign.set(String(seatId), String(personHome));
         };
 
-        const persistFit  = data => self._fitScenario.set(data.talent_role_id, { placedUser: data._placedUser, swapWith: data._swapWith });
-        const clearFitRole = data => { data._placedUser = null; data._swapWith = null; self._fitScenario.delete(data.talent_role_id); };
-        const undoSwap = data => {
-          const partnerId = data._swapWith;
-          clearFitRole(data);
-          if (partnerId != null) { const p = nodeById(partnerId); if (p) clearFitRole(p.data); }
+        // Derive every node's display state from the assignment. Keeps `_placedUser` as
+        // the single source for colouring, the panel and the org-fit metric.
+        const syncPlacements = () => {
+          nodes.forEach(n => {
+            if (n.talent_role_id === '__root__') { n._placedUser = null; return; }
+            const occ = occupantOf(n.talent_role_id);
+            if (occ === String(n.talent_role_id)) { n._placedUser = null; return; }
+            const src = nodeById(occ);
+            const p   = src ? src.data : null;
+            const e   = p ? fitOf(p, n.talent_role_id) : null;
+            n._placedUser = {
+              user_id:  p ? p.user_id : null,
+              name:     p ? p.employee_name : '—',
+              role_fit: e ? numOr(e.role_fit) : null,
+              band:     e ? (e.band || 'N/A') : 'N/A',
+              fromRoleId:   occ,
+              fromRoleName: p ? p.talent_role_name : '—'
+            };
+          });
         };
-        // Swap the home node's original incumbent into the target role (and vice-versa).
-        const placeSwap = (homeNode, targetNode) => {
-          if (!homeNode || !targetNode || homeNode === targetNode) return;
-          undoSwap(homeNode.data);
-          undoSwap(targetNode.data);
-          const A = homeNode.data, X = targetNode.data;
-          const aFitX = fitOf(A, X.talent_role_id);   // A's fit for the target role
-          const cFitA = fitOf(X, A.talent_role_id);   // target incumbent's fit for A's role
-          if (!aFitX) return;
-          X._placedUser = { user_id: A.user_id, name: A.employee_name, role_fit: numOr(aFitX.role_fit), band: aFitX.band || 'N/A', fromRoleId: A.talent_role_id, fromRoleName: A.talent_role_name };
-          A._placedUser = { user_id: X.user_id, name: X.employee_name, role_fit: cFitA ? numOr(cFitA.role_fit) : null, band: cFitA ? (cFitA.band || 'N/A') : 'N/A', fromRoleId: X.talent_role_id, fromRoleName: X.talent_role_name };
-          A._swapWith = X.talent_role_id;
-          X._swapWith = A.talent_role_id;
-          persistFit(A); persistFit(X);
+
+        // Swap whoever currently sits in these two seats. `swapSeatsRaw` mutates only —
+        // batch callers (the optimizer) re-index and sync once at the end instead of per swap.
+        const swapSeatsRaw = (seatA, seatB) => {
+          const a = String(seatA), b = String(seatB);
+          if (a === b) return;
+          const pa = occupantOf(a), pb = occupantOf(b);
+          setOccupant(a, pb);
+          setOccupant(b, pa);
         };
+        const swapSeats = (seatA, seatB) => {
+          swapSeatsRaw(seatA, seatB);
+          rebuildSeatIndex();
+          syncPlacements();
+        };
+        // Move a person into a seat — i.e. swap that seat with the one they occupy now.
+        // Everyone else's placement is preserved.
+        const movePersonTo = (personHome, seatId) => swapSeats(seatOf(personHome), seatId);
+        // Send a seat's ORIGINAL incumbent back to it (displacing whoever is there).
+        const restoreSeat  = seatId => swapSeats(seatOf(seatId), seatId);
+        const clearAssignment = () => { self._fitAssign.clear(); rebuildSeatIndex(); syncPlacements(); };
+
+        syncPlacements();   // rehydrate placements after a Looker re-render
 
         const paintFit = () => {
           nodeG.style('opacity', 1);
@@ -1071,8 +1104,7 @@
         const GREEN_BONUS = 1000;
         const runGreedyOptimize = () => {
           // Always compute from the baseline org (discards any manual placements).
-          self._fitScenario.clear();
-          nodes.forEach(n => { n._placedUser = null; n._swapWith = null; });
+          clearAssignment();
 
           const seen  = new Set();
           const cands = [];
@@ -1113,12 +1145,13 @@
           let applied = 0;
           cands.forEach(c => {
             if (used.has(String(c.aId)) || used.has(String(c.xId))) return;
-            const home = nodeById(c.aId), target = nodeById(c.xId);
-            if (!home || !target) return;
-            placeSwap(home, target);
+            if (!nodeById(c.aId) || !nodeById(c.xId)) return;
+            swapSeatsRaw(c.aId, c.xId);   // disjoint, so this is a plain pairwise swap
             used.add(String(c.aId)); used.add(String(c.xId));
             applied++;
           });
+          rebuildSeatIndex();
+          syncPlacements();
 
           self._lastOptimize = applied;
           paintFit();
@@ -1203,14 +1236,14 @@
             const allCands  = candidatesForRole(ownRoleId);
             const divOn     = self._divFilter && !!targetDiv;
             const cands     = divOn
-              ? allCands.filter(c => normDiv(c.division) === targetDiv || currentSeatOf(c.homeRoleId) === ownRoleId)
+              ? allCands.filter(c => normDiv(c.division) === targetDiv || seatOf(c.homeRoleId) === ownRoleId)
               : allCands;
             const hiddenCount = allCands.length - cands.length;
             const roleRows = cands.length ? cands.map(c => {
               const band  = c.band || 'N/A';
               const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
               const pct   = c.fit != null ? Math.min(100, Math.max(0, Math.round(c.fit))) : 0;
-              const seat  = currentSeatOf(c.homeRoleId);
+              const seat  = seatOf(c.homeRoleId);
               const here  = seat === ownRoleId;
               const moved = seat !== String(c.homeRoleId);
               const dlt   = (c.fit != null && occ.fit != null) ? Math.round(c.fit - occ.fit) : null;
@@ -1240,7 +1273,7 @@
             const pDivOn    = self._divFilter && !!personDiv;
             const allPRows  = (Array.isArray(occData.employee_role_fits) ? occData.employee_role_fits.slice() : [])
               .sort((a, b) => (numOr(b.role_fit) ?? -1) - (numOr(a.role_fit) ?? -1));
-            const occSeat = currentSeatOf(occ.homeRoleId);
+            const occSeat = seatOf(occ.homeRoleId);
             const pRows   = pDivOn
               ? allPRows.filter(r => divisionOfEntry(r) === personDiv || String(r.talent_role_id) === occSeat)
               : allPRows;
@@ -1304,14 +1337,14 @@
             self._action.querySelectorAll('[data-pick-person]').forEach(item => {
               item.onclick = () => {
                 const homeId = item.getAttribute('data-pick-person');
-                const seat   = currentSeatOf(homeId);
+                const seat   = seatOf(homeId);
+                const from   = nodeById(seat);           // where they sit now — that seat changes hands
                 let fly = null;
                 if (seat === ownRoleId) {
-                  undoSwap(data);                       // already here → put things back
+                  restoreSeat(ownRoleId);                // already here → hand the seat back
                 } else {
-                  const homeNode = nodeById(homeId);
-                  if (homeNode === d)      undoSwap(data);           // their home is this seat → bring home
-                  else if (homeNode)     { placeSwap(homeNode, d); fly = [homeNode, d]; }
+                  movePersonTo(homeId, ownRoleId);       // everyone else's placement is preserved
+                  if (from) fly = [from, d];
                 }
                 applyAndRefresh(fly, render);
               };
@@ -1323,13 +1356,12 @@
                 const rid = item.getAttribute('data-pick-role');
                 let fly = null;
                 if (rid === occSeat) {
-                  undoSwap(occData);                    // click current seat → undo
-                } else if (rid === String(occ.homeRoleId)) {
-                  undoSwap(occData);                    // click HOME → move back home
+                  // clicking the seat they already hold → send them back home (no-op if home)
+                  movePersonTo(occ.homeRoleId, occ.homeRoleId);
                 } else {
                   const target = nodeById(rid);
-                  const home   = nodeById(occ.homeRoleId);
-                  if (home && target) { placeSwap(home, target); fly = [home, target]; }
+                  movePersonTo(occ.homeRoleId, rid);    // preserves every other placement
+                  if (target) fly = [d, target];
                 }
                 applyAndRefresh(fly, render);
               };
@@ -1559,8 +1591,7 @@
 
         btnReset.onclick = () => {
           if (self._fitMode) {
-            self._fitScenario.clear();
-            nodes.forEach(n => { n._placedUser = null; n._swapWith = null; });
+            clearAssignment();
             self._lastOptimize = null;
             self._action.classList.remove('visible');
             paintFit();
