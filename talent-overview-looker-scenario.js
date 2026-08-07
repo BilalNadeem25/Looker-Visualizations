@@ -109,6 +109,13 @@
           .to-rec-delta { font-size:10px; font-weight:700; color:rgba(255,255,255,0.5); }
           .to-rec-delta.up { color:#2ecc71; }
           .to-rec-delta.down { color:#e74c3c; }
+          .to-divline { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:2px 0 1px; }
+          .to-divchk { display:flex; align-items:center; gap:5px; font-size:10px; color:rgba(255,255,255,0.7); cursor:pointer; }
+          .to-divchk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
+          .to-divhint { font-size:9px; color:rgba(255,255,255,0.4); flex-shrink:0; }
+          .to-divname { font-size:9px; color:#16a085; font-weight:600; letter-spacing:0.2px; padding:0 0 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-sum-chk { display:flex; align-items:center; gap:5px; font-size:10px; color:#666; cursor:pointer; margin-top:8px; }
+          .to-sum-chk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
@@ -253,6 +260,7 @@
         this._scenarioMode = false;
         this._fitMode      = false;
         this._fitTab       = 'role';
+        this._divFilter    = true;
         this._scenario     = new Map();
         this._fitScenario  = new Map();
         this._gapIdx       = 0;
@@ -270,6 +278,7 @@
 
       updateAsync(data, element, config, queryResponse, details, done) {
         this._chart.querySelectorAll('svg').forEach(el => el.remove());
+        this._fitRerender = null;   // drop the closure bound to the previous render's tree
 
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
         const fieldNames = fields.map(f => f.name);
@@ -315,6 +324,7 @@
           employee_name:              pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
+          division_name:              pick(row, 'division_name') ?? null,
           client_name:                pick(row, 'client_name') ?? '—',
           bench_strength:             normBench(pick(row, 'bench_strength')),
           bench_risk:                 normBenchRisk(pick(row, 'bench_risk')),
@@ -361,7 +371,7 @@
         if (roots.length > 1) {
           nodes.unshift({
             talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
-            employee_name: '', talent_role_name: '', parent_talent_role_name: null,
+            employee_name: '', talent_role_name: '', parent_talent_role_name: null, division_name: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
             is_mission_critical_position: false, is_talent: false, role_fit_score: null,
             successor_role_fit_scores: [], candidate_role_fit_scores: [], employee_role_fits: []
@@ -506,10 +516,19 @@
                 }).join('')}
               </div>
               <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
+              <label class="to-sum-chk"><input type="checkbox" id="to-sum-div" ${this._divFilter ? 'checked' : ''}> Same-division moves only</label>
               <button class="to-opt-btn" id="to-fit-optimize">⚡ Auto-optimize placements</button>
-              <div class="to-summary-section" style="color:#888;font-size:10px;">${this._lastOptimize != null ? `Auto-optimize applied <b>${this._lastOptimize}</b> improving swap${this._lastOptimize === 1 ? '' : 's'}. ` : ''}Click a role to place its person by hand, or auto-optimize the whole org. Reset clears all placements.</div>`;
+              <div class="to-summary-section" style="color:#888;font-size:10px;">${this._lastOptimize != null ? `Auto-optimize applied <b>${this._lastOptimize}</b> improving swap${this._lastOptimize === 1 ? '' : 's'}${this._divFilter ? ' within divisions' : ' across the whole org'}. ` : ''}Click a role to place its person by hand, or auto-optimize the whole org. Reset clears all placements.</div>`;
             const optBtn = document.getElementById('to-fit-optimize');
             if (optBtn) optBtn.onclick = () => runGreedyOptimize();
+            const sumDiv = document.getElementById('to-sum-div');
+            if (sumDiv) sumDiv.onchange = () => {
+              this._divFilter = sumDiv.checked;
+              this._lastOptimize = null;
+              renderSummary();
+              // keep an open explorer popover in sync with the constraint
+              if (this._fitRerender && this._action.classList.contains('visible')) this._fitRerender();
+            };
             return;
           }
 
@@ -955,6 +974,7 @@
               idx.get(rid).push({
                 name: P.employee_name, user_id: P.user_id,
                 homeRoleId: P.talent_role_id, homeRoleName: P.talent_role_name,
+                division: P.division_name,
                 fit: numOr(e.role_fit), band: e.band || 'N/A'
               });
             });
@@ -963,6 +983,24 @@
           return idx;
         })();
         const candidatesForRole = roleId => roleCandidateIndex.get(String(roleId)) || [];
+
+        // ── Division relevance ─────────────────────────────────────
+        // Narrow candidates to people whose current role sits in the same division as
+        // the target role — a same-division move is usually the realistic one. Divisions
+        // come from the chart nodes themselves; entries for roles outside the current
+        // view fall back to the division carried on the fit entry.
+        const normDiv = v => String(v == null ? '' : v).trim().toLowerCase();
+        const divisionOfRole = roleId => {
+          const n = nodeById(roleId);
+          return n ? normDiv(n.data.division_name) : '';
+        };
+        const divisionOfEntry = e => divisionOfRole(e.talent_role_id) || normDiv(e.division_name);
+        // Only meaningful when both sides actually declare a division.
+        const divisionBlocks = (roleIdA, roleIdB) => {
+          if (!self._divFilter) return false;
+          const a = divisionOfRole(roleIdA), b = divisionOfRole(roleIdB);
+          return !!a && !!b && a !== b;
+        };
 
         // Who is sitting in this role right now (after any swaps), and where a given
         // person currently sits (their home seat unless they've been swapped away).
@@ -1051,6 +1089,9 @@
               if (seen.has(key)) return;
               const Xn = nodeById(xid);
               if (!Xn || Xn.data.talent_role_id === '__root__') return;
+              // Same-division constraint (when enabled) — keeps auto-optimize to moves
+              // that are organisationally plausible, not just numerically better.
+              if (divisionBlocks(A.talent_role_id, xid)) return;
               const X = Xn.data;
               const aFitX = numOr(e.role_fit);
               const cEntry = fitOf(X, A.talent_role_id);   // target incumbent's fit for A's role
@@ -1156,7 +1197,15 @@
             const initials = (occ.name || '?').split(' ').map(w => w[0]).slice(0, 2).join('');
 
             // ── Lens A: candidates for THIS role ──
-            const cands   = candidatesForRole(ownRoleId);
+            // Narrowed to the target role's division when the filter is on. The person
+            // currently in the seat is never hidden, so the list always shows the baseline.
+            const targetDiv = divisionOfRole(ownRoleId);
+            const allCands  = candidatesForRole(ownRoleId);
+            const divOn     = self._divFilter && !!targetDiv;
+            const cands     = divOn
+              ? allCands.filter(c => normDiv(c.division) === targetDiv || currentSeatOf(c.homeRoleId) === ownRoleId)
+              : allCands;
+            const hiddenCount = allCands.length - cands.length;
             const roleRows = cands.length ? cands.map(c => {
               const band  = c.band || 'N/A';
               const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
@@ -1182,14 +1231,20 @@
                     <b>${c.fit != null ? c.fit : '—'}</b>
                   </span>
                 </div>`;
-            }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">No one has been scored for this role.<br>Ensure <b>employee_role_fits</b> is in the tile query.</div>`;
+            }).join('') : `<div class="to-impact-row" style="color:rgba(255,255,255,0.6);">${divOn && hiddenCount ? `No one in this division has been scored for this role.` : `No one has been scored for this role.<br>Ensure <b>employee_role_fits</b> is in the tile query.`}</div>`;
 
             // ── Lens B: roles for the CURRENT occupant ──
-            const occHome = nodeById(occ.homeRoleId);
-            const occData = occHome ? occHome.data : data;
-            const pRows   = (Array.isArray(occData.employee_role_fits) ? occData.employee_role_fits.slice() : [])
+            const occHome  = nodeById(occ.homeRoleId);
+            const occData  = occHome ? occHome.data : data;
+            const personDiv = divisionOfRole(occ.homeRoleId);
+            const pDivOn    = self._divFilter && !!personDiv;
+            const allPRows  = (Array.isArray(occData.employee_role_fits) ? occData.employee_role_fits.slice() : [])
               .sort((a, b) => (numOr(b.role_fit) ?? -1) - (numOr(a.role_fit) ?? -1));
             const occSeat = currentSeatOf(occ.homeRoleId);
+            const pRows   = pDivOn
+              ? allPRows.filter(r => divisionOfEntry(r) === personDiv || String(r.talent_role_id) === occSeat)
+              : allPRows;
+            const pHidden = allPRows.length - pRows.length;
             const personRows = pRows.length ? pRows.map(r => {
               const rid   = String(r.talent_role_id);
               const band  = r.band || 'N/A';
@@ -1223,14 +1278,27 @@
                 <button class="to-tab ${tab === 'person' ? 'on' : ''}" data-tab="person">This person</button>
               </div>
               <div class="to-impact" style="border-color:${occColor};margin-top:6px;">
-                <div class="to-impact-sev" style="color:${occColor};">${tab === 'role' ? `BEST FIT FOR THIS ROLE (${cands.length})` : 'BEST ROLES FOR THIS PERSON'}</div>
+                <div class="to-impact-sev" style="color:${occColor};">${tab === 'role' ? `BEST FIT FOR THIS ROLE (${cands.length})` : `BEST ROLES FOR THIS PERSON (${pRows.length})`}</div>
                 <div class="to-act-note" style="padding:0 0 4px;">${tab === 'role' ? 'Click a person to move them into this role.' : 'Click a role to move this person there.'}</div>
+                <div class="to-divline">
+                  <label class="to-divchk"><input type="checkbox" id="to-div-filter" ${self._divFilter ? 'checked' : ''}> Same division only</label>
+                  ${(tab === 'role' ? (divOn ? hiddenCount : 0) : (pDivOn ? pHidden : 0)) ? `<span class="to-divhint">${tab === 'role' ? hiddenCount : pHidden} hidden</span>` : ''}
+                </div>
+                ${(tab === 'role' ? targetDiv : personDiv) ? `<div class="to-divname">${esc((tab === 'role' ? (nodeById(ownRoleId) && nodeById(ownRoleId).data.division_name) : (occHome && occHome.data.division_name)) || '')}</div>` : `<div class="to-divname" style="color:rgba(255,255,255,0.35);">No division on this role — showing all</div>`}
                 <div class="to-fit-scroll">${tab === 'role' ? roleRows : personRows}</div>
               </div>`;
 
             self._action.querySelectorAll('[data-tab]').forEach(btn => {
               btn.onclick = () => { self._fitTab = btn.getAttribute('data-tab'); render(); };
             });
+
+            const divChk = self._action.querySelector('#to-div-filter');
+            if (divChk) divChk.onchange = () => {
+              self._divFilter = divChk.checked;
+              self._lastOptimize = null;
+              renderSummary();          // the optimizer hint reflects the constraint
+              render();
+            };
 
             // Role lens: pick a PERSON (identified by their home role) for this role.
             self._action.querySelectorAll('[data-pick-person]').forEach(item => {
@@ -1268,6 +1336,7 @@
             });
           };
 
+          self._fitRerender = render;   // lets the summary's division toggle refresh this popover
           render();
 
           const pad = 12, aw = 252, ah = self._action.offsetHeight || 240;
