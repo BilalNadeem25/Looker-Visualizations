@@ -116,6 +116,28 @@
           .to-divname { font-size:9px; color:#16a085; font-weight:600; letter-spacing:0.2px; padding:0 0 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-sum-chk { display:flex; align-items:center; gap:5px; font-size:10px; color:#666; cursor:pointer; margin-top:8px; }
           .to-sum-chk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
+          .to-exp-open { width:100%; margin-top:5px; padding:6px 8px; border:1px solid #16a085; border-radius:5px; background:#fff; color:#16a085; font-size:11px; font-weight:600; cursor:pointer; }
+          .to-exp-open:hover { background:#eafaf6; }
+          .to-exp-open:disabled { opacity:0.4; cursor:default; border-color:#ccc; color:#999; }
+
+          /* ── Export plan modal ── */
+          .to-export { position:absolute; inset:0; background:rgba(20,24,28,0.55); z-index:40; display:none; align-items:center; justify-content:center; padding:22px; }
+          .to-export.visible { display:flex; }
+          .to-exp-card { background:#fff; border-radius:9px; box-shadow:0 8px 34px rgba(0,0,0,0.32); width:100%; max-width:620px; max-height:100%; display:flex; flex-direction:column; overflow:hidden; }
+          .to-exp-head { display:flex; align-items:center; justify-content:space-between; padding:12px 15px; border-bottom:1px solid #eee; font-weight:700; font-size:13px; color:#222; flex-shrink:0; }
+          .to-exp-x { cursor:pointer; color:#b0b0b0; font-size:15px; line-height:1; }
+          .to-exp-x:hover { color:#555; }
+          .to-exp-tabs { display:flex; align-items:center; gap:6px; padding:9px 15px; border-bottom:1px solid #f0f0f0; flex-shrink:0; }
+          .to-exp-tabs .to-tab { flex:0 0 auto; min-width:74px; border:1px solid #ddd; background:#fff; color:#666; }
+          .to-exp-tabs .to-tab:hover { background:#f2f2f2; }
+          .to-exp-tabs .to-tab.on { background:#16a085; border-color:#16a085; color:#fff; }
+          .to-exp-spacer { flex:1 1 auto; }
+          .to-exp-btn { font-size:11px; padding:5px 10px; border-radius:4px; border:1px solid #ddd; background:#fff; color:#444; cursor:pointer; }
+          .to-exp-btn:hover { background:#f2f2f2; }
+          .to-exp-btn.primary { background:#16a085; border-color:#16a085; color:#fff; font-weight:600; }
+          .to-exp-btn.primary:hover { background:#12876f; }
+          .to-exp-text { flex:1 1 auto; min-height:230px; border:none; outline:none; resize:none; padding:13px 15px; font-family:Menlo,Consolas,'Courier New',monospace; font-size:11px; line-height:1.5; color:#333; white-space:pre; overflow:auto; }
+          .to-exp-foot { padding:8px 15px; border-top:1px solid #f0f0f0; font-size:10px; color:#999; flex-shrink:0; }
           .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
@@ -250,6 +272,15 @@
         cascade.id = 'to-cascade';
         cascade.addEventListener('click', e => e.stopPropagation());
         element.appendChild(cascade);
+
+        const exportEl = document.createElement('div');
+        exportEl.className = 'to-export';
+        exportEl.id = 'to-export';
+        exportEl.addEventListener('click', e => {
+          e.stopPropagation();
+          if (e.target === exportEl) { exportEl.classList.remove('visible'); exportEl.innerHTML = ''; }
+        });
+        element.appendChild(exportEl);
 
         this._chart        = chart;
         this._tooltip      = tooltip;
@@ -514,9 +545,12 @@
               <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
               <label class="to-sum-chk"><input type="checkbox" id="to-sum-div" ${this._divFilter ? 'checked' : ''}> Same-division moves only</label>
               <button class="to-opt-btn" id="to-fit-optimize">⚡ Auto-optimize placements</button>
+              <button class="to-exp-open" id="to-fit-export" ${placements ? '' : 'disabled'}>📋 Export move plan${placements ? '' : ' (no moves yet)'}</button>
               <div class="to-summary-section" style="color:#888;font-size:10px;">${this._lastOptimize != null ? `Auto-optimize applied <b>${this._lastOptimize}</b> improving swap${this._lastOptimize === 1 ? '' : 's'}${this._divFilter ? ' within divisions' : ' across the whole org'}. ` : ''}Click a role to place its person by hand, or auto-optimize the whole org. Reset clears all placements.</div>`;
             const optBtn = document.getElementById('to-fit-optimize');
             if (optBtn) optBtn.onclick = () => runGreedyOptimize();
+            const expBtn = document.getElementById('to-fit-export');
+            if (expBtn) expBtn.onclick = () => showExport();
             const sumDiv = document.getElementById('to-sum-div');
             if (sumDiv) sumDiv.onchange = () => {
               this._divFilter = sumDiv.checked;
@@ -1162,6 +1196,214 @@
           return applied;
         };
 
+        // ══ Export the scenario as an actionable move plan ═══════════
+        // The assignment is a permutation, so it decomposes into disjoint CYCLES. Each
+        // cycle is one atomic move group — every step in it has to happen together or a
+        // seat is left empty. Presenting it that way turns a pile of swaps into a
+        // sequenced, executable plan.
+        const assignmentCycles = () => {
+          const seenIds = new Set();
+          const cycles  = [];
+          realNodes().forEach(n => {
+            const start = String(n.talent_role_id);
+            if (seenIds.has(start)) return;
+            if (seatOf(start) === start) { seenIds.add(start); return; }   // hasn't moved
+            const cyc = [];
+            let cur = start;
+            while (!seenIds.has(cur)) {
+              seenIds.add(cur);
+              cyc.push(cur);
+              cur = seatOf(cur);            // this person's new seat == next person's home
+            }
+            if (cyc.length > 1) cycles.push(cyc);
+          });
+          return cycles;
+        };
+
+        const planSteps = () => {
+          const out = [];
+          assignmentCycles().forEach((cyc, gi) => {
+            cyc.forEach((homeId, si) => {
+              const pNode = nodeById(homeId);
+              if (!pNode) return;
+              const p       = pNode.data;
+              const toId    = seatOf(homeId);
+              const toNode  = nodeById(toId);
+              const to      = toNode ? toNode.data : null;
+              const e       = fitOf(p, toId);
+              const fromDiv = p.division_name || '';
+              const toDiv   = to ? (to.division_name || '') : '';
+              out.push({
+                group: gi + 1,
+                groupType: cyc.length === 2 ? 'Swap' : `${cyc.length}-way rotation`,
+                groupSize: cyc.length,
+                step: si + 1,
+                employee:   p.employee_name || '—',
+                fromRole:   p.talent_role_name || '—',
+                fromDiv, toDiv,
+                toRole:     to ? (to.talent_role_name || '—') : '—',
+                crossDiv:   !!(normDiv(fromDiv) && normDiv(toDiv) && normDiv(fromDiv) !== normDiv(toDiv)),
+                fitBefore:  numOr(p.role_fit_score),
+                fitAfter:   e ? numOr(e.role_fit) : null,
+                bandBefore: p.org_health_index || 'N/A',
+                bandAfter:  e ? (e.band || 'N/A') : 'N/A',
+                toMcp:      to ? isTruthy(to.is_mission_critical_position) : false
+              });
+            });
+          });
+          return out;
+        };
+
+        const planHeader = () => {
+          const base = computeOrgFit(false), sim = computeOrgFit(true);
+          const rn   = realNodes();
+          const bandCount = simulated => ['High', 'Medium', 'Low', 'N/A'].map(k => {
+            const c = rn.filter(n => (simulated && n._placedUser ? n._placedUser.band : (n.org_health_index || 'N/A')) === k).length;
+            return `${k}: ${c}`;
+          }).join('  ');
+          return {
+            client: (rn[0] && rn[0].client_name) || '—',
+            people: rn.length,
+            baseAvg: base.avg, simAvg: sim.avg,
+            basePct: base.pctGreen, simPct: sim.pctGreen,
+            bandsBefore: bandCount(false), bandsAfter: bandCount(true),
+            divOnly: !!self._divFilter,
+            when: new Date().toISOString().slice(0, 16).replace('T', ' ')
+          };
+        };
+
+        const planToText = () => {
+          const h = planHeader(), steps = planSteps();
+          const groups = [];
+          steps.forEach(s => { (groups[s.group] = groups[s.group] || []).push(s); });
+          const r1 = v => v == null ? '—' : Math.round(v);
+          const lines = [];
+          lines.push('ROLE FIT OPTIMIZATION PLAN');
+          lines.push('='.repeat(58));
+          lines.push(`Organisation : ${h.client}`);
+          lines.push(`Generated    : ${h.when}`);
+          lines.push(`Scope        : ${h.people} roles · ${h.divOnly ? 'same-division moves only' : 'cross-division moves allowed'}`);
+          lines.push('');
+          lines.push('IMPACT');
+          lines.push('-'.repeat(58));
+          lines.push(`Avg role fit (MCP-weighted) : ${r1(h.baseAvg)}  ->  ${r1(h.simAvg)}   (${h.simAvg > h.baseAvg ? '+' : ''}${r1((h.simAvg ?? 0) - (h.baseAvg ?? 0))})`);
+          lines.push(`Roles in green band         : ${h.basePct}%  ->  ${h.simPct}%   (${h.simPct > h.basePct ? '+' : ''}${h.simPct - h.basePct} pts)`);
+          lines.push(`Band mix before             : ${h.bandsBefore}`);
+          lines.push(`Band mix after              : ${h.bandsAfter}`);
+          lines.push('');
+          lines.push(`MOVE PLAN — ${groups.filter(Boolean).length} group(s), ${steps.length} move(s)`);
+          lines.push('-'.repeat(58));
+          lines.push('Each group is atomic: all moves within a group must happen together,');
+          lines.push('otherwise a role is left unfilled.');
+          lines.push('');
+          groups.forEach((g, gi) => {
+            if (!g) return;
+            lines.push(`GROUP ${gi} — ${g[0].groupType}`);
+            g.forEach(s => {
+              lines.push(`  ${s.step}. ${s.employee}`);
+              lines.push(`     from : ${s.fromRole}${s.fromDiv ? ` (${s.fromDiv})` : ''}`);
+              lines.push(`     to   : ${s.toRole}${s.toDiv ? ` (${s.toDiv})` : ''}${s.toMcp ? '  [MISSION CRITICAL]' : ''}${s.crossDiv ? '  [CROSS-DIVISION]' : ''}`);
+              lines.push(`     fit  : ${s.fitBefore == null ? '—' : s.fitBefore} (${s.bandBefore})  ->  ${s.fitAfter == null ? '—' : s.fitAfter} (${s.bandAfter})`);
+            });
+            lines.push('');
+          });
+          lines.push('NOTES');
+          lines.push('-'.repeat(58));
+          lines.push('* Fit scores are model outputs for assessed person-role pairings only;');
+          lines.push('  pairings never assessed cannot be evaluated and are excluded.');
+          lines.push('* This plan reflects role fit alone. It does not account for');
+          lines.push('  compensation, seniority, location, notice periods or willingness to move.');
+          lines.push('* Treat it as a shortlist of opportunities to review, not a decision.');
+          return lines.join('\n');
+        };
+
+        const planToCSV = () => {
+          const q = v => {
+            const s = v == null ? '' : String(v);
+            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+          };
+          const head = ['group', 'group_type', 'step', 'employee', 'from_role', 'from_division',
+                        'to_role', 'to_division', 'cross_division', 'to_role_mission_critical',
+                        'fit_before', 'fit_after', 'fit_delta', 'band_before', 'band_after'];
+          const rows = planSteps().map(s => [
+            s.group, s.groupType, s.step, s.employee, s.fromRole, s.fromDiv,
+            s.toRole, s.toDiv, s.crossDiv ? 'yes' : 'no', s.toMcp ? 'yes' : 'no',
+            s.fitBefore == null ? '' : s.fitBefore,
+            s.fitAfter  == null ? '' : s.fitAfter,
+            (s.fitBefore != null && s.fitAfter != null) ? Math.round(s.fitAfter - s.fitBefore) : '',
+            s.bandBefore, s.bandAfter
+          ].map(q).join(','));
+          return [head.join(','), ...rows].join('\n');
+        };
+
+        // Export modal. Downloads and clipboard can both be blocked inside Looker's
+        // sandboxed iframe, so the text is always shown in a selectable textarea as the
+        // guaranteed fallback.
+        const showExport = () => {
+          const el = document.getElementById('to-export');
+          if (!el) return;
+          const steps = planSteps();
+          if (!steps.length) return;
+          let view = 'text';
+
+          const paint = () => {
+            const body = view === 'csv' ? planToCSV() : planToText();
+            el.innerHTML = `
+              <div class="to-exp-card">
+                <div class="to-exp-head">
+                  <span>Role fit optimization plan — ${steps.length} move${steps.length === 1 ? '' : 's'}</span>
+                  <span class="to-exp-x" data-x="1">✕</span>
+                </div>
+                <div class="to-exp-tabs">
+                  <button class="to-tab ${view === 'text' ? 'on' : ''}" data-v="text">Summary</button>
+                  <button class="to-tab ${view === 'csv' ? 'on' : ''}" data-v="csv">CSV</button>
+                  <span class="to-exp-spacer"></span>
+                  <button class="to-exp-btn" data-act="copy">Copy</button>
+                  <button class="to-exp-btn primary" data-act="dl">Download ${view === 'csv' ? '.csv' : '.txt'}</button>
+                </div>
+                <textarea class="to-exp-text" spellcheck="false" readonly>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea>
+                <div class="to-exp-foot">Select the text above to copy manually if your browser blocks the buttons.</div>
+              </div>`;
+
+            el.querySelector('[data-x]').onclick = () => { el.classList.remove('visible'); el.innerHTML = ''; };
+            el.querySelectorAll('[data-v]').forEach(b => { b.onclick = () => { view = b.getAttribute('data-v'); paint(); }; });
+
+            const ta = el.querySelector('.to-exp-text');
+            el.querySelector('[data-act="copy"]').onclick = ev => {
+              const btn = ev.currentTarget;
+              const done = ok => { btn.textContent = ok ? 'Copied ✓' : 'Select & copy'; setTimeout(() => { btn.textContent = 'Copy'; }, 1800); };
+              try {
+                ta.removeAttribute('readonly'); ta.select(); ta.setSelectionRange(0, ta.value.length);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(ta.value).then(() => done(true), () => done(!!document.execCommand('copy')));
+                } else {
+                  done(!!document.execCommand('copy'));
+                }
+                ta.setAttribute('readonly', 'readonly');
+              } catch (e) { done(false); }
+            };
+            el.querySelector('[data-act="dl"]').onclick = ev => {
+              const btn = ev.currentTarget;
+              try {
+                const isCsv = view === 'csv';
+                const blob = new Blob([isCsv ? planToCSV() : planToText()], { type: (isCsv ? 'text/csv' : 'text/plain') + ';charset=utf-8;' });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href = url;
+                a.download = `role-fit-plan-${new Date().toISOString().slice(0, 10)}.${isCsv ? 'csv' : 'txt'}`;
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 2000);
+              } catch (e) {
+                btn.textContent = 'Blocked — copy instead';
+                setTimeout(() => { btn.textContent = `Download ${view === 'csv' ? '.csv' : '.txt'}`; }, 2200);
+              }
+            };
+          };
+
+          paint();
+          el.classList.add('visible');
+        };
+
         const renderFitPanel = () => {
           const el = document.getElementById('to-cascade');
           if (!el) return;
@@ -1552,6 +1794,10 @@
           } else {
             self._action.classList.remove('visible');
             clearScenarioPaint();
+          }
+          if (!self._fitMode) {
+            const ex = document.getElementById('to-export');
+            if (ex) { ex.classList.remove('visible'); ex.innerHTML = ''; }
           }
           renderColorLegend();
           renderSummary();
