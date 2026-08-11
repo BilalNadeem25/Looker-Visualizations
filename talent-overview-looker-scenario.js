@@ -1358,45 +1358,76 @@
                   <button class="to-tab ${view === 'text' ? 'on' : ''}" data-v="text">Summary</button>
                   <button class="to-tab ${view === 'csv' ? 'on' : ''}" data-v="csv">CSV</button>
                   <span class="to-exp-spacer"></span>
-                  <button class="to-exp-btn" data-act="copy">Copy</button>
-                  <button class="to-exp-btn primary" data-act="dl">Download ${view === 'csv' ? '.csv' : '.txt'}</button>
+                  <button class="to-exp-btn primary" data-act="copy">Copy</button>
+                  <button class="to-exp-btn" data-act="dl">Download ${view === 'csv' ? '.csv' : '.txt'}</button>
                 </div>
                 <textarea class="to-exp-text" spellcheck="false" readonly>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea>
-                <div class="to-exp-foot">Select the text above to copy manually if your browser blocks the buttons.</div>
+                <div class="to-exp-foot">Copy is the most reliable route — Looker sandboxes this panel, so downloads may be blocked. If the buttons do nothing: click the text, then Ctrl/Cmd+A, Ctrl/Cmd+C. For CSV, paste into a blank sheet and use Data → Split text to columns.</div>
               </div>`;
 
             el.querySelector('[data-x]').onclick = () => { el.classList.remove('visible'); el.innerHTML = ''; };
             el.querySelectorAll('[data-v]').forEach(b => { b.onclick = () => { view = b.getAttribute('data-v'); paint(); }; });
 
             const ta = el.querySelector('.to-exp-text');
+
+            // Copy: execCommand FIRST because it is synchronous and therefore still
+            // inside the user gesture. (navigator.clipboard is async — by the time its
+            // promise rejects the gesture is gone and an execCommand fallback would fail.
+            // It also needs a secure context + clipboard-write permission, which the
+            // Looker viz iframe often lacks.)
             el.querySelector('[data-act="copy"]').onclick = ev => {
-              const btn = ev.currentTarget;
-              const done = ok => { btn.textContent = ok ? 'Copied ✓' : 'Select & copy'; setTimeout(() => { btn.textContent = 'Copy'; }, 1800); };
+              const btn  = ev.currentTarget;
+              const done = ok => {
+                btn.textContent = ok ? 'Copied ✓' : 'Press Ctrl/Cmd+C';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 2200);
+              };
+              let ok = false;
               try {
-                ta.removeAttribute('readonly'); ta.select(); ta.setSelectionRange(0, ta.value.length);
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                  navigator.clipboard.writeText(ta.value).then(() => done(true), () => done(!!document.execCommand('copy')));
-                } else {
-                  done(!!document.execCommand('copy'));
-                }
-                ta.setAttribute('readonly', 'readonly');
-              } catch (e) { done(false); }
-            };
-            el.querySelector('[data-act="dl"]').onclick = ev => {
-              const btn = ev.currentTarget;
-              try {
-                const isCsv = view === 'csv';
-                const blob = new Blob([isCsv ? planToCSV() : planToText()], { type: (isCsv ? 'text/csv' : 'text/plain') + ';charset=utf-8;' });
-                const url  = URL.createObjectURL(blob);
-                const a    = document.createElement('a');
-                a.href = url;
-                a.download = `role-fit-plan-${new Date().toISOString().slice(0, 10)}.${isCsv ? 'csv' : 'txt'}`;
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                setTimeout(() => URL.revokeObjectURL(url), 2000);
-              } catch (e) {
-                btn.textContent = 'Blocked — copy instead';
-                setTimeout(() => { btn.textContent = `Download ${view === 'csv' ? '.csv' : '.txt'}`; }, 2200);
+                ta.removeAttribute('readonly');
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, ta.value.length);
+                ok = !!document.execCommand('copy');
+              } catch (e) { ok = false; }
+              ta.setAttribute('readonly', 'readonly');
+              if (ok) { done(true); return; }
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(ta.value).then(() => done(true), () => done(false));
+              } else {
+                done(false);   // text stays selected, so Ctrl/Cmd+C works
               }
+            };
+
+            // Download: use a data: URI, NOT a blob. blob: URLs are scoped to the
+            // creating origin, and this iframe is sandboxed with an opaque origin — when
+            // the download is blocked the browser navigates to the blob instead and the
+            // new context cannot read it, which renders as a blank page.
+            el.querySelector('[data-act="dl"]').onclick = ev => {
+              const btn   = ev.currentTarget;
+              const isCsv = view === 'csv';
+              const label = () => `Download ${view === 'csv' ? '.csv' : '.txt'}`;
+              const fail  = () => {
+                btn.textContent = 'Blocked here — use Copy';
+                setTimeout(() => { btn.textContent = label(); }, 2600);
+              };
+              try {
+                const text = isCsv ? planToCSV() : planToText();
+                const href = `data:${isCsv ? 'text/csv' : 'text/plain'};charset=utf-8,${encodeURIComponent(text)}`;
+                const a    = document.createElement('a');
+                a.href     = href;
+                a.download = `role-fit-plan-${new Date().toISOString().slice(0, 10)}.${isCsv ? 'csv' : 'txt'}`;
+                a.rel      = 'noopener';
+                a.style.display = 'none';
+                // Anchor must live in the same document as the click for the download
+                // attribute to be honoured; keep it inside the viz element.
+                el.appendChild(a);
+                a.click();
+                setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 0);
+                // Whether the sandbox actually permitted the download can't be detected,
+                // so prompt rather than claim success.
+                btn.textContent = 'Check downloads…';
+                setTimeout(() => { btn.textContent = label(); }, 2600);
+              } catch (e) { fail(); }
             };
           };
 
