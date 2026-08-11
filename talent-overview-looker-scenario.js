@@ -96,8 +96,6 @@
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
           .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
-          .to-opt-btn { width:100%; margin-top:8px; padding:6px 8px; border:none; border-radius:5px; background:#16a085; color:#fff; font-size:11px; font-weight:600; cursor:pointer; }
-          .to-opt-btn:hover { background:#12876f; }
           .to-tabs { display:flex; gap:4px; margin-top:8px; }
           .to-tab { flex:1 1 0; font-size:11px; padding:4px 6px; border-radius:4px; cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:rgba(255,255,255,0.06); color:rgba(255,255,255,0.75); }
           .to-tab:hover { background:rgba(255,255,255,0.16); }
@@ -116,7 +114,7 @@
           .to-divname { font-size:9px; color:#16a085; font-weight:600; letter-spacing:0.2px; padding:0 0 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-sum-chk { display:flex; align-items:center; gap:5px; font-size:10px; color:#666; cursor:pointer; margin-top:8px; }
           .to-sum-chk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
-          .to-exp-open { width:100%; margin-top:5px; padding:6px 8px; border:1px solid #16a085; border-radius:5px; background:#fff; color:#16a085; font-size:11px; font-weight:600; cursor:pointer; }
+          .to-exp-open { width:100%; margin-top:8px; padding:6px 8px; border:1px solid #16a085; border-radius:5px; background:#fff; color:#16a085; font-size:11px; font-weight:600; cursor:pointer; }
           .to-exp-open:hover { background:#eafaf6; }
           .to-exp-open:disabled { opacity:0.4; cursor:default; border-color:#ccc; color:#999; }
 
@@ -520,21 +518,25 @@
           const el = document.getElementById('to-summary');
 
           if (this._fitMode) {
-            const base = computeOrgFit(false);
-            const sim  = computeOrgFit(true);
+            const m = computeOrgFitPair();
             const placements = rn.filter(n => n._placedUser).length;
+            // One decimal: rounding each side independently made sub-point gains read as
+            // "26 → 27 (+0)". The delta is derived from the unrounded values.
+            const d1 = v => v == null ? '—' : v.toFixed(1);
             const numArrow = (a, b) => {
-              if (a == null || b == null) return b != null ? Math.round(b) : '—';
-              if (Math.abs(b - a) < 0.5) return `<span class="to-arrow flat">${Math.round(b)}</span>`;
-              return `<span class="to-arrow ${b > a ? 'good' : 'bad'}">${Math.round(b)} ${b > a ? '▲' : '▼'}</span>`;
+              if (a == null || b == null) return b != null ? d1(b) : '—';
+              const diff = b - a;
+              if (Math.abs(diff) < 0.05) return `<span class="to-arrow flat">${d1(b)}</span>`;
+              return `<span class="to-arrow ${diff > 0 ? 'good' : 'bad'}">${d1(b)} ${diff > 0 ? '▲' : '▼'} ${diff > 0 ? '+' : ''}${diff.toFixed(1)}</span>`;
             };
             const pctArrow = (a, b) => a === b
               ? `<span class="to-arrow flat">${b}%</span>`
               : `<span class="to-arrow ${b > a ? 'good' : 'bad'}">${b}% ${b > a ? '▲' : '▼'}</span>`;
             el.innerHTML = `
               <div class="to-summary-title">Organizational Role Fit</div>
-              <div class="to-summary-row"><span class="to-summary-label">Avg fit (MCP-wtd)</span><span class="to-summary-value">${base.avg != null ? Math.round(base.avg) : '—'} → ${numArrow(base.avg, sim.avg)}</span></div>
-              <div class="to-summary-row"><span class="to-summary-label">% Green</span><span class="to-summary-value">${base.pctGreen}% → ${pctArrow(base.pctGreen, sim.pctGreen)}</span></div>
+              <div class="to-summary-row"><span class="to-summary-label">Avg fit (MCP-wtd)</span><span class="to-summary-value">${d1(m.baseAvg)} → ${numArrow(m.baseAvg, m.simAvg)}</span></div>
+              <div class="to-summary-row"><span class="to-summary-label">% Green</span><span class="to-summary-value">${m.basePct}% → ${pctArrow(m.basePct, m.simPct)}</span></div>
+              ${m.unscored ? `<div class="to-summary-row"><span class="to-summary-label" style="color:#e67e22;">Unassessed placements</span><span class="to-summary-value" style="color:#e67e22;">${m.unscored}</span></div>` : ''}
               <div class="to-summary-section">
                 <div class="to-summary-section-title">Node bands (simulated)</div>
                 ${['High', 'Medium', 'Low', 'N/A'].map(k => {
@@ -544,17 +546,13 @@
               </div>
               <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
               <label class="to-sum-chk"><input type="checkbox" id="to-sum-div" ${this._divFilter ? 'checked' : ''}> Same-division moves only</label>
-              <button class="to-opt-btn" id="to-fit-optimize">⚡ Auto-optimize placements</button>
               <button class="to-exp-open" id="to-fit-export" ${placements ? '' : 'disabled'}>📋 Export move plan${placements ? '' : ' (no moves yet)'}</button>
-              <div class="to-summary-section" style="color:#888;font-size:10px;">${this._lastOptimize != null ? `Auto-optimize applied <b>${this._lastOptimize}</b> improving swap${this._lastOptimize === 1 ? '' : 's'}${this._divFilter ? ' within divisions' : ' across the whole org'}. ` : ''}Click a role to place its person by hand, or auto-optimize the whole org. Reset clears all placements.</div>`;
-            const optBtn = document.getElementById('to-fit-optimize');
-            if (optBtn) optBtn.onclick = () => runGreedyOptimize();
+              <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to see who fits it best, then place someone to raise the average. Reset clears all placements.</div>`;
             const expBtn = document.getElementById('to-fit-export');
             if (expBtn) expBtn.onclick = () => showExport();
             const sumDiv = document.getElementById('to-sum-div');
             if (sumDiv) sumDiv.onchange = () => {
               this._divFilter = sumDiv.checked;
-              this._lastOptimize = null;
               renderSummary();
               // keep an open explorer popover in sync with the constraint
               if (this._fitRerender && this._action.classList.contains('visible')) this._fitRerender();
@@ -1025,12 +1023,6 @@
           return n ? normDiv(n.data.division_name) : '';
         };
         const divisionOfEntry = e => divisionOfRole(e.talent_role_id) || normDiv(e.division_name);
-        // Only meaningful when both sides actually declare a division.
-        const divisionBlocks = (roleIdA, roleIdB) => {
-          if (!self._divFilter) return false;
-          const a = divisionOfRole(roleIdA), b = divisionOfRole(roleIdB);
-          return !!a && !!b && a !== b;
-        };
 
         // Who is sitting in this role right now (after any swaps), and where a given
         // person currently sits (their home seat unless they've been swapped away).
@@ -1082,17 +1074,13 @@
           });
         };
 
-        // Swap whoever currently sits in these two seats. `swapSeatsRaw` mutates only —
-        // batch callers (the optimizer) re-index and sync once at the end instead of per swap.
-        const swapSeatsRaw = (seatA, seatB) => {
+        // Swap whoever currently sits in these two seats.
+        const swapSeats = (seatA, seatB) => {
           const a = String(seatA), b = String(seatB);
           if (a === b) return;
           const pa = occupantOf(a), pb = occupantOf(b);
           setOccupant(a, pb);
           setOccupant(b, pa);
-        };
-        const swapSeats = (seatA, seatB) => {
-          swapSeatsRaw(seatA, seatB);
           rebuildSeatIndex();
           syncPlacements();
         };
@@ -1115,85 +1103,37 @@
             .attr('stroke-width',     d => d.data._placedUser ? 2.5 : (d.depth === 0 ? 3 : 1.5));
         };
 
-        // Organizational Role Fit: MCP-weighted mean role_fit + % of roles in the green band.
-        const computeOrgFit = sim => {
-          let wsum = 0, w = 0, green = 0, counted = 0;
-          realNodes().forEach(n => {
-            const band = sim && n._placedUser ? n._placedUser.band    : (n.org_health_index || 'N/A');
-            const fit  = sim && n._placedUser ? n._placedUser.role_fit : numOr(n.role_fit_score);
-            const weight = isTruthy(n.is_mission_critical_position) ? 2 : 1;
-            if (fit != null) { wsum += fit * weight; w += weight; }
-            if (band === 'High') green++;
-            counted++;
-          });
-          return { avg: w ? wsum / w : null, pctGreen: counted ? Math.round(100 * green / counted) : 0 };
-        };
-
         const roleWeight = n => isTruthy(n.is_mission_critical_position) ? 2 : 1;
 
-        // Greedy org-wide optimizer: from baseline, evaluate every mutually-scored
-        // pairwise swap, score each by (green flips first, then MCP-weighted fit gain),
-        // and apply the best non-overlapping ones. Green-primary matches the goal of
-        // turning red/yellow nodes green; disjoint swaps keep the result readable/undoable.
-        const GREEN_BONUS = 1000;
-        const runGreedyOptimize = () => {
-          // Always compute from the baseline org (discards any manual placements).
-          clearAssignment();
-
-          const seen  = new Set();
-          const cands = [];
-          realNodes().forEach(A => {
-            if (!Array.isArray(A.employee_role_fits) || !A.employee_role_fits.length) return;
-            const baseA = numOr(A.role_fit_score);
-            if (baseA == null) return;
-            const wA = roleWeight(A);
-            const greenA0 = A.org_health_index === 'High' ? 1 : 0;
-            A.employee_role_fits.forEach(e => {
-              const xid = String(e.talent_role_id);
-              if (xid === String(A.talent_role_id)) return;
-              const key = [String(A.talent_role_id), xid].sort().join('|');
-              if (seen.has(key)) return;
-              const Xn = nodeById(xid);
-              if (!Xn || Xn.data.talent_role_id === '__root__') return;
-              // Same-division constraint (when enabled) — keeps auto-optimize to moves
-              // that are organisationally plausible, not just numerically better.
-              if (divisionBlocks(A.talent_role_id, xid)) return;
-              const X = Xn.data;
-              const aFitX = numOr(e.role_fit);
-              const cEntry = fitOf(X, A.talent_role_id);   // target incumbent's fit for A's role
-              const cFitA = cEntry ? numOr(cEntry.role_fit) : null;
-              const baseX = numOr(X.role_fit_score);
-              if (aFitX == null || cFitA == null || baseX == null) return;   // need all four to be scored
-              seen.add(key);
-              const wX = roleWeight(X);
-              const fitGain = (wA * cFitA + wX * aFitX) - (wA * baseA + wX * baseX);
-              const greenAfter = (e.band === 'High' ? 1 : 0) + (cEntry.band === 'High' ? 1 : 0);
-              const greenBefore = greenA0 + (X.org_health_index === 'High' ? 1 : 0);
-              const composite = GREEN_BONUS * (greenAfter - greenBefore) + fitGain;
-              if (composite > 0) cands.push({ composite, aId: A.talent_role_id, xId: xid });
-            });
+        // Organizational Role Fit: MCP-weighted mean role_fit + % of roles in the green band.
+        // Baseline and simulated are computed in ONE pass over a COMMON DENOMINATOR — a
+        // role only counts toward the average if the fit is known on BOTH sides. Without
+        // that, moving someone into a role they were never assessed for silently dropped
+        // them out of the simulated average (and out of its denominator), so the two
+        // numbers were measuring different populations and the delta was meaningless.
+        // `unscored` reports how many placements are unassessed, so the gap is visible
+        // rather than hidden inside the average.
+        const computeOrgFitPair = () => {
+          let bSum = 0, sSum = 0, w = 0, bGreen = 0, sGreen = 0, total = 0, unscored = 0;
+          realNodes().forEach(n => {
+            const weight = roleWeight(n);
+            const bFit   = numOr(n.role_fit_score);
+            const bBand  = n.org_health_index || 'N/A';
+            const sFit   = n._placedUser ? n._placedUser.role_fit : bFit;
+            const sBand  = n._placedUser ? (n._placedUser.band || 'N/A') : bBand;
+            total++;
+            if (bBand === 'High') bGreen++;
+            if (sBand === 'High') sGreen++;
+            if (n._placedUser && n._placedUser.role_fit == null) unscored++;
+            if (bFit != null && sFit != null) { bSum += bFit * weight; sSum += sFit * weight; w += weight; }
           });
-          cands.sort((p, q) => q.composite - p.composite);
-
-          const used = new Set();
-          let applied = 0;
-          cands.forEach(c => {
-            if (used.has(String(c.aId)) || used.has(String(c.xId))) return;
-            if (!nodeById(c.aId) || !nodeById(c.xId)) return;
-            swapSeatsRaw(c.aId, c.xId);   // disjoint, so this is a plain pairwise swap
-            used.add(String(c.aId)); used.add(String(c.xId));
-            applied++;
-          });
-          rebuildSeatIndex();
-          syncPlacements();
-
-          self._lastOptimize = applied;
-          paintFit();
-          renderSummary();
-          renderFitPanel();
-          // Zoom out to the whole org so the recoloring is visible at a glance.
-          if (self._svg && self._zoom && self._initT) self._svg.transition().duration(500).call(self._zoom.transform, self._initT);
-          return applied;
+          return {
+            baseAvg: w ? bSum / w : null,
+            simAvg:  w ? sSum / w : null,
+            basePct: total ? Math.round(100 * bGreen / total) : 0,
+            simPct:  total ? Math.round(100 * sGreen / total) : 0,
+            unscored, total
+          };
         };
 
         // ══ Export the scenario as an actionable move plan ═══════════
@@ -1255,8 +1195,8 @@
         };
 
         const planHeader = () => {
-          const base = computeOrgFit(false), sim = computeOrgFit(true);
-          const rn   = realNodes();
+          const m  = computeOrgFitPair();
+          const rn = realNodes();
           const bandCount = simulated => ['High', 'Medium', 'Low', 'N/A'].map(k => {
             const c = rn.filter(n => (simulated && n._placedUser ? n._placedUser.band : (n.org_health_index || 'N/A')) === k).length;
             return `${k}: ${c}`;
@@ -1264,8 +1204,9 @@
           return {
             client: (rn[0] && rn[0].client_name) || '—',
             people: rn.length,
-            baseAvg: base.avg, simAvg: sim.avg,
-            basePct: base.pctGreen, simPct: sim.pctGreen,
+            baseAvg: m.baseAvg, simAvg: m.simAvg,
+            basePct: m.basePct, simPct: m.simPct,
+            unscored: m.unscored,
             bandsBefore: bandCount(false), bandsAfter: bandCount(true),
             divOnly: !!self._divFilter,
             when: new Date().toISOString().slice(0, 16).replace('T', ' ')
@@ -1276,7 +1217,8 @@
           const h = planHeader(), steps = planSteps();
           const groups = [];
           steps.forEach(s => { (groups[s.group] = groups[s.group] || []).push(s); });
-          const r1 = v => v == null ? '—' : Math.round(v);
+          const d1 = v => v == null ? '—' : v.toFixed(1);
+          const delta = (h.simAvg != null && h.baseAvg != null) ? h.simAvg - h.baseAvg : null;
           const lines = [];
           lines.push('ROLE FIT OPTIMIZATION PLAN');
           lines.push('='.repeat(58));
@@ -1286,10 +1228,17 @@
           lines.push('');
           lines.push('IMPACT');
           lines.push('-'.repeat(58));
-          lines.push(`Avg role fit (MCP-weighted) : ${r1(h.baseAvg)}  ->  ${r1(h.simAvg)}   (${h.simAvg > h.baseAvg ? '+' : ''}${r1((h.simAvg ?? 0) - (h.baseAvg ?? 0))})`);
+          lines.push(`Avg role fit (MCP-weighted) : ${d1(h.baseAvg)}  ->  ${d1(h.simAvg)}   (${delta == null ? '—' : (delta > 0 ? '+' : '') + delta.toFixed(1)})`);
           lines.push(`Roles in green band         : ${h.basePct}%  ->  ${h.simPct}%   (${h.simPct > h.basePct ? '+' : ''}${h.simPct - h.basePct} pts)`);
           lines.push(`Band mix before             : ${h.bandsBefore}`);
           lines.push(`Band mix after              : ${h.bandsAfter}`);
+          if (h.unscored) {
+            lines.push('');
+            lines.push(`!! ${h.unscored} placement(s) move someone into a role they have NOT been`);
+            lines.push('   assessed for (shown as "NOT ASSESSED" below). Their fit is unknown, so');
+            lines.push('   the averages above exclude those roles on BOTH sides to stay comparable.');
+            lines.push('   Assess those pairings before acting on this plan.');
+          }
           lines.push('');
           lines.push(`MOVE PLAN — ${groups.filter(Boolean).length} group(s), ${steps.length} move(s)`);
           lines.push('-'.repeat(58));
@@ -1303,7 +1252,7 @@
               lines.push(`  ${s.step}. ${s.employee}`);
               lines.push(`     from : ${s.fromRole}${s.fromDiv ? ` (${s.fromDiv})` : ''}`);
               lines.push(`     to   : ${s.toRole}${s.toDiv ? ` (${s.toDiv})` : ''}${s.toMcp ? '  [MISSION CRITICAL]' : ''}${s.crossDiv ? '  [CROSS-DIVISION]' : ''}`);
-              lines.push(`     fit  : ${s.fitBefore == null ? '—' : s.fitBefore} (${s.bandBefore})  ->  ${s.fitAfter == null ? '—' : s.fitAfter} (${s.bandAfter})`);
+              lines.push(`     fit  : ${s.fitBefore == null ? '—' : s.fitBefore} (${s.bandBefore})  ->  ${s.fitAfter == null ? 'NOT ASSESSED for this role' : `${s.fitAfter} (${s.bandAfter})`}`);
             });
             lines.push('');
           });
@@ -1324,10 +1273,12 @@
           };
           const head = ['group', 'group_type', 'step', 'employee', 'from_role', 'from_division',
                         'to_role', 'to_division', 'cross_division', 'to_role_mission_critical',
+                        'assessed_for_target_role',
                         'fit_before', 'fit_after', 'fit_delta', 'band_before', 'band_after'];
           const rows = planSteps().map(s => [
             s.group, s.groupType, s.step, s.employee, s.fromRole, s.fromDiv,
             s.toRole, s.toDiv, s.crossDiv ? 'yes' : 'no', s.toMcp ? 'yes' : 'no',
+            s.fitAfter == null ? 'NO' : 'yes',
             s.fitBefore == null ? '' : s.fitBefore,
             s.fitAfter  == null ? '' : s.fitAfter,
             (s.fitBefore != null && s.fitAfter != null) ? Math.round(s.fitAfter - s.fitBefore) : '',
@@ -1487,7 +1438,6 @@
           const esc       = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
 
           const applyAndRefresh = (flyTargets, rerender) => {
-            self._lastOptimize = null;   // a manual placement is no longer "the optimizer's result"
             paintFit();
             renderSummary();
             renderFitPanel();
@@ -1601,8 +1551,7 @@
             const divChk = self._action.querySelector('#to-div-filter');
             if (divChk) divChk.onchange = () => {
               self._divFilter = divChk.checked;
-              self._lastOptimize = null;
-              renderSummary();          // the optimizer hint reflects the constraint
+              renderSummary();
               render();
             };
 
@@ -1854,7 +1803,6 @@
           if (self._scenarioMode) return;
           self._hideEmployeeCard();
           self._fitMode = !self._fitMode;
-          self._lastOptimize = null;
           self._action.classList.remove('visible');
           if (self._fitMode) {
             self._preColorMode = self._colorMode;
@@ -1869,7 +1817,6 @@
         btnReset.onclick = () => {
           if (self._fitMode) {
             clearAssignment();
-            self._lastOptimize = null;
             self._action.classList.remove('visible');
             paintFit();
             renderSummary();
