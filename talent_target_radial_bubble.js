@@ -9,12 +9,44 @@
   function initials(n){return String(n||"?").split(/\s+/).map(function(w){return w[0];}).slice(0,2).join("").toUpperCase();}
   function svgEl(tag,a){var n=document.createElementNS(SVGNS,tag);for(var k in a)n.setAttribute(k,a[k]);return n;}
   function hashStr(s){var h=2166136261;s=String(s);for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0);}
-  // Org unit names arrive as free text: NULL, "", "   ", trailing spaces and doubled inner
-  // spaces all occur. Normalise to a single display form so "absent" is always "" (never a
-  // truthy blank that would pool unrelated people into a phantom unit) and so two spellings
-  // of the same real unit still match.
-  function orgUnit(v){ return v==null ? "" : String(v).replace(/\s+/g," ").trim(); }
+  // Free-text columns arrive as NULL, "", "   ", with trailing spaces and doubled inner spaces.
+  // Collapse to a single display form so "absent" is always "" — never a truthy blank.
+  function clean(v){ return v==null ? "" : String(v).replace(/\s+/g," ").trim(); }
+  // Org unit names get the same treatment, so "absent" never pools unrelated people into a
+  // phantom unit and two spellings of the same real unit still match.
+  function orgUnit(v){ return clean(v); }
   function unitKey(v){ return orgUnit(v).toLowerCase(); }
+  // DB enums arrive in mixed conventions across clients — "MALE", "never_married", "Single".
+  // Title-case only single-case strings, so genuinely mixed-case text ("PhD", "McKenzie") and
+  // already-presentable values are left exactly as stored.
+  function prettyText(v){
+    var s = clean(v).replace(/[_\-]+/g," ").replace(/\s+/g," ").trim();
+    if(!s) return "";
+    if(s === s.toLowerCase() || s === s.toUpperCase()){
+      s = s.toLowerCase().replace(/(^|\s)(\S)/g, function(m,a,b){ return a + b.toUpperCase(); });
+    }
+    return s;
+  }
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  // Parse the ISO text Looker hands over rather than new Date(): a date-only string is parsed as
+  // UTC and then printed in local time, which shifts a birthday to the previous day west of GMT.
+  function ymd(v){
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(clean(v));
+    if(!m) return null;
+    var mo = Number(m[2]), d = Number(m[3]);
+    return (mo>=1 && mo<=12 && d>=1 && d<=31) ? { y:Number(m[1]), m:mo, d:d } : null;
+  }
+  function fmtDate(v){
+    var p = ymd(v);
+    return p ? p.d + " " + MONTHS[p.m-1] + " " + p.y : clean(v);   // unknown shape -> show as stored
+  }
+  // Fallback for tiles that select dob but not the derived age column.
+  function ageFrom(v){
+    var p = ymd(v); if(!p) return null;
+    var now = new Date(), a = now.getFullYear() - p.y;
+    if(now.getMonth()+1 < p.m || (now.getMonth()+1 === p.m && now.getDate() < p.d)) a--;
+    return (a >= 0 && a < 140) ? a : null;
+  }
   function coerceArray(v){
     if(v==null) return [];
     if(Array.isArray(v)) return v;
@@ -22,6 +54,11 @@
     if(typeof v==="object") return [v];
     return [];
   }
+
+  // talent_profiles columns behind the card's Personal information block. `country` is not listed
+  // because the tile already fetches it as its own dimension (lowercased) — the block reuses that.
+  var PERSONAL_KEYS = ["email","contact_number","dob","age","gender","address_line_1","address_line_2",
+                       "city","state","post_code","nationality","marital_status"];
 
   var STYLES = `
   .nx-wrap{
@@ -132,6 +169,17 @@
   .flag-development{background:#eaf2ff; color:#2f6fdb}
   .flag-unmatched{background:#fdecea; color:#d1442c}
   .flag-additional{background:#eef0f4; color:#6b7684}
+  /* ---- personal information ---- */
+  .nx-pi{margin-top:2px}
+  /* 98px is the width at which the longest label ("Marital status") stops wrapping to two lines */
+  .nx-pirow{display:grid; grid-template-columns:98px minmax(0,1fr); gap:10px; align-items:baseline;
+    padding:7px 0 7px 14px; border-top:1px solid var(--line-soft); font-size:12.5px}
+  .nx-pirow:first-of-type{border-top:none}
+  .nx-pirow .pl{font-size:9px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#9aa4b0}
+  .nx-pirow .pv{min-width:0; color:var(--ink); overflow-wrap:anywhere; line-height:1.5}
+  .nx-pirow .pv.pempty{color:#c0c7d0}
+  .nx-pirow .pmuted{color:#a2abb6; font-variant-numeric:tabular-nums}
+  @media (max-width:420px){ .nx-pirow{grid-template-columns:1fr; gap:2px} }
   /* ---- simulate mode (complementarity) ---- */
   .nx-seg{display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; margin-top:1px}
   .nx-seg button{border:none; background:#fff; color:var(--muted); font-size:12.5px; font-weight:700; padding:7px 13px; cursor:pointer}
@@ -300,7 +348,10 @@
         selectedPairs: [], chartRole: null, openMenuPk: null,
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
         search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
-        collapsed: {},   // shared across cards so rows stay aligned when comparing
+        // shared across cards so rows stay aligned when comparing. Personal information starts
+        // folded: it is PII that nobody needs on screen by default, and unfolded it would push
+        // the competency and skill rows of a three-card comparison out of view.
+        collapsed: { Personal: true },
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
@@ -433,6 +484,7 @@
        "role_fit","leadership_score","agility_score","cultural_fit_score","technical_score",
        "subcompetencies_json","skills_json","bench_strength","manager_name","performance_year","performance_rating",
        "directorate_name","division_name","department_name"]
+      .concat(PERSONAL_KEYS)
       .forEach(function (k) {
         var f = all.find(function (x) { return x.name.split(".").pop() === k || x.name === k; });
         map[k] = f ? f.name : null;
@@ -447,6 +499,9 @@
         division: !!map.division_name,
         directorate: !!map.directorate_name
       };
+      // Same split for the personal fields: "not selected in this tile" and "blank on this
+      // person's profile" both read as an empty card row, but the fix for each is different.
+      this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
 
       var emps = [], roleIds = {};
       (data || []).forEach(function (row) {
@@ -481,7 +536,25 @@
             "Cultural Fit": num(val(row, "cultural_fit_score")) || 0
           },
           subcompetencies: coerceArray(val(row, "subcompetencies_json")),
-          skills: coerceArray(val(row, "skills_json"))
+          skills: coerceArray(val(row, "skills_json")),
+          // Personal information (talent_profiles) — display-only, rendered in its own
+          // collapsible. `age` comes derived from dob in SQL; ageFrom() covers tiles that
+          // selected dob without it.
+          personal: {
+            email: clean(val(row, "email")),
+            contact: clean(val(row, "contact_number")),
+            dob: clean(val(row, "dob")),
+            age: num(val(row, "age")),
+            gender: clean(val(row, "gender")),
+            nationality: clean(val(row, "nationality")),
+            marital: clean(val(row, "marital_status")),
+            addr1: clean(val(row, "address_line_1")),
+            addr2: clean(val(row, "address_line_2")),
+            city: clean(val(row, "city")),
+            state: clean(val(row, "state")),
+            postCode: clean(val(row, "post_code")),
+            country: clean(val(row, "country"))
+          }
         });
       });
 
@@ -756,6 +829,8 @@
         return '<div class="nx-skill"><span class="nm">' + esc(sk.name) + '</span>' + meta + '<span class="nx-flag flag-' + cls + '">' + esc(lbl) + '</span></div>';
       }).join("") || '<div class="nx-subrow">No skills mapped for this role.</div>';
 
+      var pi = this._personal(emp);
+
       var perf = (emp.perfYear != null || emp.perfRating != null)
         ? (emp.perfYear != null ? ("FY" + emp.perfYear + " · ") : "") + (emp.perfRating != null ? emp.perfRating : "—") : "—";
       var bench = (emp.benchStrength != null && emp.benchStrength !== "") ? '<span class="nx-bench">' + esc(emp.benchStrength) + '</span>' : "—";
@@ -780,7 +855,64 @@
             '</div>' +
             '<div class="nx-collapse-body">' + skillsHtml + '</div>' +
           '</div>' +
+        '</div>' +
+        '<div class="nx-sec">' +
+          '<div class="nx-quad' + (collapsed['Personal'] ? ' is-collapsed' : '') + '">' +
+            '<div class="nx-quadhead" data-collapse="Personal">' +
+              '<span class="nx-qh-left"><span class="nx-chev">▾</span>Personal information</span>' +
+              '<span class="s nx-sk-note">' + pi.note + '</span>' +
+            '</div>' +
+            '<div class="nx-collapse-body nx-pi">' + pi.body + '</div>' +
+          '</div>' +
         '</div>';
+    },
+
+    // ---- personal information ----------------------------------------------
+    // Every row is rendered even when blank (as an em dash) so the same labels sit at the same
+    // height across a multi-card comparison — the reason the collapse state is shared too.
+    // Returns the section body plus the short note shown on the collapsed header.
+    _personal: function (emp) {
+      var p = emp.personal || {};
+
+      var addrLines = [
+        p.addr1,
+        p.addr2,
+        [[p.city, prettyText(p.state)].filter(Boolean).join(", "), p.postCode].filter(Boolean).join(" "),
+        prettyText(p.country)
+      ].filter(Boolean);
+
+      var dobTxt = p.dob ? fmtDate(p.dob) : "";
+      var age = (p.age != null) ? Math.round(p.age) : ageFrom(p.dob);
+      if (dobTxt && age != null) dobTxt += ' <span class="pmuted">· ' + age + (age === 1 ? " yr" : " yrs") + '</span>';
+      else if (!dobTxt && age != null) dobTxt = age + (age === 1 ? " yr" : " yrs");
+
+      var rows = [
+        { l: "Email",          v: esc(p.email) },
+        { l: "Contact",        v: esc(p.contact) },
+        { l: "Date of birth",  v: dobTxt },                       // pre-escaped above
+        { l: "Gender",         v: esc(prettyText(p.gender)) },
+        { l: "Nationality",    v: esc(prettyText(p.nationality)) },
+        { l: "Marital status", v: esc(prettyText(p.marital)) },
+        { l: "Address",        v: addrLines.map(esc).join("<br>") }
+      ];
+      var filled = rows.filter(function (r) { return !!r.v; }).length;
+
+      if (!this.state.personalInQuery) {
+        return { note: "not in query",
+                 body: '<div class="nx-subrow">Personal fields are not in this tile&#39;s query — add the ' +
+                       'email, contact number, date of birth, gender, address, nationality and marital status ' +
+                       'dimensions to the tile&#39;s selected fields.</div>' };
+      }
+      if (!filled) {
+        return { note: "not recorded", body: '<div class="nx-subrow">No personal information recorded for this person.</div>' };
+      }
+      return {
+        note: "contact &amp; address",
+        body: rows.map(function (r) {
+          return '<div class="nx-pirow"><span class="pl">' + r.l + '</span>' +
+                 '<span class="pv' + (r.v ? '' : ' pempty') + '">' + (r.v || "&mdash;") + '</span></div>';
+        }).join("")
+      };
     },
 
     // ---- simulate mode (complementarity) -----------------------------------
