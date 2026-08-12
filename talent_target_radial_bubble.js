@@ -54,6 +54,22 @@
     if(typeof v==="object") return [v];
     return [];
   }
+  // Did the user actually pick the target roles in view? Looker reports the dashboard/explore
+  // filters behind the query on queryResponse.applied_filters, keyed by field name. This is what
+  // separates "I selected three roles" (their fits are worth plotting) from "I filtered nothing,
+  // so every assessment in the model arrived". Returns true / false, or null when this Looker
+  // build reports nothing either way — see the idle test in _draw for how null is treated.
+  function roleFilterApplied(qr){
+    var af = qr && qr.applied_filters;
+    if(!af || typeof af !== "object") return null;
+    return Object.keys(af).some(function(k){
+      var f = af[k];
+      var field = (f && f.field && f.field.name) || k;
+      if(!/target_role/.test(String(field))) return false;
+      var v = (f && typeof f === "object" && "value" in f) ? f.value : f;
+      return v != null && String(v).trim() !== "" && String(v) !== "[]";
+    });
+  }
 
   // talent_profiles columns behind the card's Personal information block. `country` is not listed
   // because the tile already fetches it as its own dimension (lowercased) — the block reuses that.
@@ -345,6 +361,7 @@
       };
       this.state = {
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
+        roleFilterApplied: null,   // set from queryResponse each update; null = Looker didn't say
         selectedPairs: [], chartRole: null, openMenuPk: null,
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
         search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
@@ -502,6 +519,8 @@
       // Same split for the personal fields: "not selected in this tile" and "blank on this
       // person's profile" both read as an empty card row, but the fix for each is different.
       this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
+
+      this.state.roleFilterApplied = roleFilterApplied(queryResponse);
 
       var emps = [], roleIds = {};
       (data || []).forEach(function (row) {
@@ -677,22 +696,30 @@
       var sim = st.mode === "simulate";
       var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
                    .sort(function (a, b) { return b.roleFit - a.roleFit; });
-      // Idle state — no target role picked in the Looker filter, so every (employee × role) row
-      // arrives and the radius cannot mean "fit to the target role". Park every node on the 0%
-      // rim in the Low colour instead of plotting a blob of scores against different roles.
+      // Idle state — the query was never scoped to target roles, so every (employee × role) row
+      // in the model arrives and the radius cannot mean "fit to the target role". Park every node
+      // on the 0% rim in the Low colour rather than plot a blob of unrelated fits.
+      // A deliberate multi-role selection is NOT idle: the roles in view are the ones the user
+      // asked for, so each node plots its own fit and the count line names that basis. Only a
+      // positive "no role filter" from Looker idles the chart — when it reports nothing (null) the
+      // fit is plotted, since a mislabelled-but-readable chart beats a rim of dots either way.
       // Simulate mode always scopes itself to one role, so it never idles.
-      var idle = !sim && st.rolesInView.length !== 1;
+      var multi = !sim && st.rolesInView.length > 1;
+      var idle = multi && st.roleFilterApplied === false;
+      var tail = st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "";
+      var spread = list.length + " assessments · " + st.userIds.length + " employees · " +
+                   st.rolesInView.length + " roles · ";
       if (sim) {
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
+      } else if (!list.length) {
+        this.$.count.textContent = "No assessments in view";
       } else if (idle) {
-        this.$.count.textContent = !list.length ? "No assessments in view"
-          : list.length + " assessments · " + st.userIds.length + " employees · " + st.rolesInView.length + " roles" +
-            " · fit not plotted — filter to one target role" +
-            (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+        this.$.count.textContent = spread + "fit not plotted — filter to a target role" + tail;
+      } else if (multi) {
+        this.$.count.textContent = spread + "fit is against each row's own target role" + tail;
       } else {
-        this.$.count.textContent = list.length + " employees" +
-          (st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "");
+        this.$.count.textContent = list.length + " employees" + tail;
       }
 
       var W = 760, H = 504; svg.setAttribute("viewBox", "0 0 " + W + " " + H);
@@ -870,7 +897,8 @@
     // ---- personal information ----------------------------------------------
     // Every row is rendered even when blank (as an em dash) so the same labels sit at the same
     // height across a multi-card comparison — the reason the collapse state is shared too.
-    // Returns the section body plus the short note shown on the collapsed header.
+    // Returns the section body plus a header note that stays empty unless something is wrong —
+    // the header names the section already, so a note there is only worth the space as a warning.
     _personal: function (emp) {
       var p = emp.personal || {};
 
@@ -907,7 +935,7 @@
         return { note: "not recorded", body: '<div class="nx-subrow">No personal information recorded for this person.</div>' };
       }
       return {
-        note: "contact &amp; address",
+        note: "",                                   // nothing to say when the data is simply there
         body: rows.map(function (r) {
           return '<div class="nx-pirow"><span class="pl">' + r.l + '</span>' +
                  '<span class="pv' + (r.v ? '' : ' pempty') + '">' + (r.v || "&mdash;") + '</span></div>';
