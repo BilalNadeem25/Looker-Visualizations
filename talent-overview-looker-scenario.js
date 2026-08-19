@@ -199,6 +199,9 @@
           .to-casc-role { font-size:12px; font-weight:600; color:#222; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-casc-who { font-size:11px; color:#888; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-casc-chip { font-size:9px; font-weight:700; letter-spacing:0.3px; border:1px solid; border-radius:10px; padding:2px 7px; flex-shrink:0; text-transform:uppercase; }
+          .to-casc-undo { flex-shrink:0; width:17px; height:17px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; color:#bbb; cursor:pointer; opacity:0; transition:opacity 0.12s ease, background 0.12s ease; }
+          .to-casc-row:hover .to-casc-undo { opacity:1; }
+          .to-casc-undo:hover { background:#fdecea; color:#e74c3c; }
         `;
         element.appendChild(style);
 
@@ -848,6 +851,34 @@
           revertBackfill(prev);
         };
 
+        // Remove one role's scenario change completely, keeping both ends consistent.
+        // Cancelling a BACKFILL gap must also clear the fill that created it — otherwise
+        // the role that pulled this person up still shows them as its replacement and the
+        // same person ends up in two seats at once.
+        const undoRoleChange = v => {
+          const data = v.data;
+          if (data._backfill && !data._filledBy) {
+            const uid = data.user_id;
+            if (uid != null) {
+              root.descendants().forEach(o => {
+                const f = o.data._filledBy;
+                if (f && f.user_id != null && String(f.user_id) === String(uid)) {
+                  o.data._filledBy = null;
+                  persistRole(o);
+                }
+              });
+            }
+          } else if (data._filledBy) {
+            revertBackfill(data._filledBy);      // release the person back to their own seat
+            data._filledBy = null;
+          }
+          data._vacant   = false;
+          data._backfill = false;
+          data._newHire  = false;
+          data._simBand  = computeBenchRisk(data._simSuccessors, data._benchTarget);
+          self._scenario.delete(data.talent_role_id);
+        };
+
         // ── Locate-in-chart helpers (make the cascade navigable at any org size) ──
         const escAttr  = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
         const nodePos  = v => radialPoint(v.x, v.y);
@@ -936,23 +967,43 @@
                            : (v.data.employee_name || '—');
                 const ci   = String(who).split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
                 return `
-                  <div class="to-casc-row" data-role="${escAttr(v.data.talent_role_id)}">
+                  <div class="to-casc-row" data-role="${escAttr(v.data.talent_role_id)}" title="Click to open this role and change the decision">
                     <span class="to-casc-av" style="background:${st.color}">${ci}</span>
                     <span class="to-casc-body">
                       <span class="to-casc-role" title="${escAttr(role)}">${role}</span>
                       <span class="to-casc-who" title="${escAttr(who)}">${who}</span>
                     </span>
                     <span class="to-casc-chip" style="color:${st.color};border-color:${st.color};">${st.label}</span>
+                    <span class="to-casc-undo" data-undo="${escAttr(v.data.talent_role_id)}" title="Undo this change">✕</span>
                   </div>`;
               }).join('')}
             </div>`;
           el.classList.add('visible');
 
+          // Click a row → fly to the role AND reopen its card, so you can pick a
+          // different successor or cancel without hunting for the node on the chart.
           el.querySelectorAll('[data-role]').forEach(rowEl => {
-            rowEl.onclick = () => {
-              const id = rowEl.getAttribute('data-role');
-              const v  = root.descendants().find(n => String(n.data.talent_role_id) === String(id));
-              if (v) flyToNodes([v], { ping: [v] });
+            rowEl.onclick = ev => {
+              if (ev.target.closest('[data-undo]')) return;   // ✕ handled separately
+              const v = nodeById(rowEl.getAttribute('data-role'));
+              if (!v) return;
+              flyToNodes([v], { ping: [v] });
+              const r = rowEl.getBoundingClientRect();
+              showActionPopover({ clientX: r.right + 10, clientY: r.top }, v);
+            };
+          });
+
+          // ✕ → remove just this change (releases both ends of a fill).
+          el.querySelectorAll('[data-undo]').forEach(x => {
+            x.onclick = ev => {
+              ev.stopPropagation();
+              const v = nodeById(x.getAttribute('data-undo'));
+              if (!v) return;
+              undoRoleChange(v);
+              self._action.classList.remove('visible');
+              paintScenario();
+              renderSummary();
+              renderCascade();
             };
           });
           el.querySelectorAll('[data-nav]').forEach(btn => {
@@ -1691,13 +1742,10 @@
               btn.onclick = () => {
                 const act = btn.getAttribute('data-act');
                 if (act === 'depart') {
-                  data._vacant = !data._vacant;
-                  // Cancelling a departure clears any backfill/fill/hire it took part in.
-                  if (!data._vacant) {
-                    if (data._filledBy) { const prev = data._filledBy; data._filledBy = null; revertBackfill(prev); }
-                    data._backfill = false;
-                    data._newHire  = false;
-                  }
+                  // Cancelling routes through undoRoleChange so both ends of a fill are
+                  // released together (see the two-seats-at-once bug it guards against).
+                  if (data._vacant) undoRoleChange(d);
+                  else              data._vacant = true;
                 }
                 if (act === 'hire') data._newHire = !data._newHire;
                 data._simBand = computeBenchRisk(data._simSuccessors, data._benchTarget);
