@@ -855,8 +855,12 @@
         // Cancelling a BACKFILL gap must also clear the fill that created it — otherwise
         // the role that pulled this person up still shows them as its replacement and the
         // same person ends up in two seats at once.
+        // Returns the role(s) left departed-but-unfilled by this undo — i.e. the original
+        // departee that now needs a successor again. Callers use it to navigate the user
+        // back to that decision instead of stranding them on the seat they just cleared.
         const undoRoleChange = v => {
           const data = v.data;
+          const released = [];
           if (data._backfill && !data._filledBy) {
             const uid = data.user_id;
             if (uid != null) {
@@ -865,6 +869,7 @@
                 if (f && f.user_id != null && String(f.user_id) === String(uid)) {
                   o.data._filledBy = null;
                   persistRole(o);
+                  released.push(o);          // still vacant, now needs a new successor
                 }
               });
             }
@@ -877,6 +882,20 @@
           data._newHire  = false;
           data._simBand  = computeBenchRisk(data._simSuccessors, data._benchTarget);
           self._scenario.delete(data.talent_role_id);
+          return released;
+        };
+
+        // Fly back to a departee that needs a successor again and reopen its card,
+        // keeping the popover roughly where it already is so it doesn't jump.
+        const returnToDepartee = node => {
+          if (!node) return;
+          flyToNodes([node], { ping: [node] });
+          const r   = self._action.getBoundingClientRect();
+          const pad = 12;   // showActionPopover offsets by this
+          const at  = (self._action.classList.contains('visible') && r.width)
+            ? { clientX: r.left - pad, clientY: r.top - pad }
+            : { clientX: window.innerWidth / 2 - 130, clientY: 90 };
+          showActionPopover(at, node);
         };
 
         // ── Locate-in-chart helpers (make the cascade navigable at any org size) ──
@@ -999,11 +1018,14 @@
               ev.stopPropagation();
               const v = nodeById(x.getAttribute('data-undo'));
               if (!v) return;
-              undoRoleChange(v);
-              self._action.classList.remove('visible');
+              const released = undoRoleChange(v);
               paintScenario();
               renderSummary();
               renderCascade();
+              // If this undo left a departee needing a successor again, go there;
+              // otherwise the change is gone and there is nothing left to show.
+              if (released.length) returnToDepartee(released[0]);
+              else self._action.classList.remove('visible');
             };
           });
           el.querySelectorAll('[data-nav]').forEach(btn => {
@@ -1741,10 +1763,11 @@
             self._action.querySelectorAll('[data-act]').forEach(btn => {
               btn.onclick = () => {
                 const act = btn.getAttribute('data-act');
+                let released = [];
                 if (act === 'depart') {
                   // Cancelling routes through undoRoleChange so both ends of a fill are
                   // released together (see the two-seats-at-once bug it guards against).
-                  if (data._vacant) undoRoleChange(d);
+                  if (data._vacant) released = undoRoleChange(d);
                   else              data._vacant = true;
                 }
                 if (act === 'hire') data._newHire = !data._newHire;
@@ -1757,7 +1780,10 @@
                 paintScenario();
                 renderSummary();
                 renderCascade();
-                render();
+                // Undoing from the successor's own seat sends you back to the departee
+                // that now needs a replacement again, rather than stranding you here.
+                if (released.length) returnToDepartee(released[0]);
+                else                 render();
               };
             });
 
@@ -1786,6 +1812,9 @@
                 render();
                 // Locate the newly-vacated seat(s) so the user never has to hunt for them.
                 if (backfilled.length) flyToNodes([d, ...backfilled], { ping: backfilled });
+                // Un-picking a successor returns the view to this departee, who is
+                // vacant again and awaiting a replacement (the card is already open).
+                else if (already) flyToNodes([d], { ping: [d] });
               };
             });
           };
