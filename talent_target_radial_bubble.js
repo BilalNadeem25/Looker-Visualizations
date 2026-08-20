@@ -225,6 +225,9 @@
   .cx-card.cx-on .cx-nm{padding-right:24px}
   .cx-gapfit{margin-top:9px; font-size:11px; color:var(--muted)}
   .cx-gapfit b{color:var(--pos); font-variant-numeric:tabular-nums}
+  /* a hand-picked partner that only covers part of the selection — the case the strict
+     qualification rule exists to keep out of the automatic pick */
+  .cx-gapfit.cx-partial b{color:var(--neg)}
   .cx-fh{margin-top:11px; padding-top:11px; border-top:1px solid var(--line-soft)}
   .cx-row{display:flex; align-items:baseline; gap:9px}
   .cx-solo{font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums}
@@ -336,7 +339,16 @@
       color_medium: { type: "string", display: "color", label: "Medium colour", default: "#f5a623", section: "Bands", order: 4 },
       color_low:    { type: "string", display: "color", label: "Low colour",    default: "#e8503a", section: "Bands", order: 5 },
       default_role_fit_max: { type: "number", label: "Default 'Role fit max' (blank = data max)", default: null, section: "Scale", order: 1 },
-      chart_height_pct: { type: "number", label: "Chart height (% of tile below the toolbar)", default: 86, section: "Scale", order: 2 }
+      chart_height_pct: { type: "number", label: "Chart height (% of tile below the toolbar)", default: 86, section: "Scale", order: 2 },
+      max_levels_below: { type: "number", label: "Max job levels a complement may sit below the successor",
+                          default: 2, section: "Complements", order: 1 },
+      // talent_roles.level carries no direction of its own. The derived table orders by
+      // "level ASC" to pick a person's current role, which implies 1 is the top — but a client
+      // could grade the other way, and getting it backwards inverts the guard, so it is a switch.
+      level_order: { type: "string", display: "select", label: "Job level numbering",
+                     values: [{ "Lower number = more senior (1 = top)": "asc" },
+                              { "Higher number = more senior": "desc" }],
+                     default: "asc", section: "Complements", order: 2 }
     },
 
     // ---- one-time shell -----------------------------------------------------
@@ -364,6 +376,11 @@
         roleFilterApplied: null,   // set from queryResponse each update; null = Looker didn't say
         selectedPairs: [], chartRole: null, openMenuPk: null,
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
+        // simAuto: the complement is still system-picked — any manual add/remove clears it so the
+        // user's choice sticks. simScopeAuto: the pool is still being found by the cascade —
+        // choosing a level by hand pins it. Switching successor re-arms both. simAutoPk labels
+        // whoever the automatic pick landed on, for the card pill.
+        simAuto: true, simScopeAuto: true, simAutoPk: null,
         search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
         // shared across cards so rows stay aligned when comparing. Personal information starts
         // folded: it is PII that nobody needs on screen by default, and unfolded it would push
@@ -388,12 +405,15 @@
       });
       $.succ.addEventListener("change", function () {
         st.simFocus = $.succ.value;
-        if (st.simComplements[st.simFocus]) st.simComplements[st.simFocus] = false;
-        // a new successor sits in a different org unit, so re-derive the pool
-        self._defaultWeak(); st.simScope = self._defaultScope(); self._draw();
+        // a new successor is a fresh problem: new gaps, a different org unit, and the automatic
+        // pick is back in charge until this user overrides it again
+        st.simAuto = true; st.simScopeAuto = true;
+        self._defaultWeak(); self._autoPick(); self._draw();
       });
       $.scope.addEventListener("change", function () {
-        st.simScope = $.scope.value; self._draw();
+        st.simScope = $.scope.value;
+        st.simScopeAuto = false;   // pinned by hand — search here, do not re-cascade
+        self._autoPick(); self._draw();
       });
       $.zoom.addEventListener("click", function (e) {
         var b = e.target.closest("button"); if (!b) return;
@@ -431,11 +451,11 @@
       }
       $.panel.addEventListener("click", function (e) {
         var srm = e.target.closest(".cx-remove");
-        if (srm) { st.simComplements[srm.getAttribute("data-pk")] = false; self._draw(); return; }
+        if (srm) { st.simComplements[srm.getAttribute("data-pk")] = false; st.simAuto = false; self._draw(); return; }
         var sug = e.target.closest(".cx-sugg");
-        if (sug) { st.simComplements[sug.getAttribute("data-pk")] = true; self._draw(); return; }
+        if (sug) { st.simComplements[sug.getAttribute("data-pk")] = true; st.simAuto = false; self._draw(); return; }
         var wide = e.target.closest(".cx-widen");
-        if (wide) { st.simScope = wide.getAttribute("data-scope"); self._draw(); return; }
+        if (wide) { st.simScope = wide.getAttribute("data-scope"); st.simScopeAuto = false; self._autoPick(); self._draw(); return; }
         var rm = e.target.closest(".nx-cardremove");
         if (rm) { self._togglePair(rm.getAttribute("data-pk")); st.openMenuPk = null; self._draw(); return; }
         var add = e.target.closest(".nx-addrole");
@@ -455,7 +475,10 @@
       });
       $.panel.addEventListener("change", function (e) {
         var c = e.target.closest("input[data-sbeh]"); if (!c) return;
-        st.simWeak[c.getAttribute("data-sbeh")] = c.checked; self._renderSim();
+        st.simWeak[c.getAttribute("data-sbeh")] = c.checked;
+        // the gaps define who qualifies, so the automatic pick (and the scope it was found in)
+        // is re-derived from scratch; _draw rather than _renderSim, as the chart highlights move
+        self._autoPick(); self._draw();
       });
 
       this._sizeChart();
@@ -491,7 +514,7 @@
     updateAsync: function (data, element, config, queryResponse, details, done) {
       this._config = Object.assign(
         { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
-          default_role_fit_max: null, chart_height_pct: 86 },
+          default_role_fit_max: null, chart_height_pct: 86, max_levels_below: 2, level_order: "asc" },
         config || {});
 
       var fields = (queryResponse && queryResponse.fields) || {};
@@ -500,7 +523,7 @@
       ["user_id","name","job_title","current_company","picture","country","target_role_id","target_role_name",
        "role_fit","leadership_score","agility_score","cultural_fit_score","technical_score",
        "subcompetencies_json","skills_json","bench_strength","manager_name","performance_year","performance_rating",
-       "directorate_name","division_name","department_name"]
+       "directorate_name","division_name","department_name","job_level"]
       .concat(PERSONAL_KEYS)
       .forEach(function (k) {
         var f = all.find(function (x) { return x.name.split(".").pop() === k || x.name === k; });
@@ -521,6 +544,9 @@
       this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
 
       this.state.roleFilterApplied = roleFilterApplied(queryResponse);
+      // Without job_level the seniority guard cannot run at all. Complements are then unfiltered
+      // by level rather than silently excluded, and the sim panel says so.
+      this.state.levelInQuery = !!map.job_level;
 
       var emps = [], roleIds = {};
       (data || []).forEach(function (row) {
@@ -545,6 +571,9 @@
           directorate: orgUnit(val(row, "directorate_name")),
           division: orgUnit(val(row, "division_name")),
           department: orgUnit(val(row, "department_name")),
+          // seniority grade of the CURRENT role — named jobLevel because "level" already means
+          // an org-scope tier (department / division / directorate) throughout simulate mode
+          jobLevel: num(val(row, "job_level")),
           benchStrength: val(row, "bench_strength"),
           perfYear: val(row, "performance_year"),
           perfRating: val(row, "performance_rating"),
@@ -637,17 +666,20 @@
       this._buildBehaviours();
       var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
                                  .sort(function (a, b) { return b.roleFit - a.roleFit; });
-      if (roleChanged) st.simComplements = {};
+      if (roleChanged) { st.simComplements = {}; st.simAuto = true; st.simScopeAuto = true; }
       if (roleChanged || !st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole) {
         st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
+        // a defaulted successor was never the user's choice, so nothing here is theirs to keep
+        st.simAuto = true; st.simScopeAuto = true;
         this._defaultWeak();
-        st.simScope = this._defaultScope();
+        this._autoPick();                   // walks department -> division -> directorate -> org
       } else {
         Object.keys(st.simComplements).forEach(function (pk) {
           if (!st.byPair[pk] || st.byPair[pk].roleId !== st.chartRole) delete st.simComplements[pk];
         });
         // the level may have emptied out (or become usable) as rows changed
         if (st.simScope !== "org" && !this._simCandidates(st.simScope).length) st.simScope = this._defaultScope();
+        this._autoPick();                   // no-op unless the pick is still system-managed
       }
       this.$.succ.innerHTML = roleEmps.map(function (e) {
         return '<option value="' + esc(e.pk) + '">' + esc(e.name) + (e.jobTitle ? " — " + esc(e.jobTitle) : "") + '</option>';
@@ -747,9 +779,11 @@
         var sim = st.mode === "simulate";
         var isFocus = sim && emp.pk === st.simFocus;
         var isComp = sim && !isFocus && !!st.simComplements[emp.pk];
-        // Simulate mode: only the current complement pool is pickable. Already-chosen
-        // complements stay lit even if the pool was narrowed after they were added.
-        var inPool = !sim || isFocus || isComp || self._inScope(emp, st.simScope);
+        // Simulate mode: only the current complement pool is pickable — in the right org unit
+        // AND within reach on seniority. Already-chosen complements stay lit even if the pool was
+        // narrowed after they were added.
+        var tooJunior = sim && !self._levelOk(emp);
+        var inPool = !sim || isFocus || isComp || (self._inScope(emp, st.simScope) && !tooJunior);
         var cls = "nx-bubble";
         if (isFocus) cls += " focus";
         else if (isComp) cls += " comp";
@@ -761,7 +795,12 @@
           "fill-opacity": (hit && inPool) ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {});
         ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" +
-          (sim && !inPool ? " · outside " + self._scopeLabel(st.simScope).toLowerCase() : "");
+          // say WHICH rule shut a bubble out — org unit and seniority look identical when greyed
+          (sim && !inPool
+            ? (tooJunior
+                ? " · " + self._levelsBelow(emp) + " levels below the successor"
+                : " · outside " + self._scopeLabel(st.simScope).toLowerCase())
+            : "");
         g.appendChild(ti);
         g.addEventListener("click", function () {
           if (st.dragMoved) return;
@@ -970,6 +1009,7 @@
     _toggleComplement: function (pk) {
       var st = this.state; if (pk === st.simFocus) return;
       st.simComplements[pk] = !st.simComplements[pk];
+      st.simAuto = false;   // the user has taken the selection over; stop auto-picking for them
     },
     _bestPartner: function (bname) {
       var sel = this._simComplementEmps(); if (!sel.length) return null;
@@ -1003,10 +1043,34 @@
       return { n: bs.length, solo: solo, team: team, lift: team - solo };
     },
     // One candidate's average lift on the checked behaviours. An average (not a sum) so it is in
-    // the same units as the headline lift; ranking is unchanged either way.
+    // the same units as the headline lift.
     _simGapFit: function (emp) {
       var f = this._simFocusEmp(), bs = this._checkedBehaviours();
       return this._wavgOver(bs, function (b) { return Math.max(0, (emp.beh[b.name] || 0) - (f.beh[b.name] || 0)); });
+    },
+    // Per checked behaviour, how far the candidate sits above (or below) the successor.
+    // Unclamped, unlike _simGapFit — a negative delta is precisely what the test below catches.
+    _gapDeltas: function (emp) {
+      var f = this._simFocusEmp();
+      return this._checkedBehaviours().map(function (b) { return (emp.beh[b.name] || 0) - (f.beh[b.name] || 0); });
+    },
+    // A candidate is only a complement if it raises EVERY checked gap. The old test was "average
+    // clamped lift > 0", which passed anyone with a single spectacular gain while they were level
+    // or worse on every other gap the user had ticked — the clamp hid the shortfall in the mean.
+    _qualifies: function (emp) {
+      var ds = this._gapDeltas(emp);
+      return ds.length > 0 && ds.every(function (d) { return d > 0; });
+    },
+    // How many checked gaps a candidate does lift — reported for near misses, so a dead end can
+    // say how close the pool came instead of just "nobody".
+    _gapCover: function (emp) {
+      return this._gapDeltas(emp).filter(function (d) { return d > 0; }).length;
+    },
+    // The lift on the candidate's WEAKEST checked gap. This is the ranking key: it is the amount
+    // by which the least-covered gap improves, so it cannot be inflated by one outsized gain.
+    _weakestLift: function (emp) {
+      var ds = this._gapDeltas(emp);
+      return ds.length ? Math.min.apply(null, ds) : 0;
     },
     // ---- complement pool scoping -------------------------------------------
     // Complements are searched in the successor's own org unit first and widened outwards only
@@ -1030,23 +1094,57 @@
       if (!unit) return false;                      // no unit on the successor -> level unusable
       return unitKey(emp[s]) === unitKey(unit);     // case/space-insensitive, so " Investments" matches
     },
-    // everyone eligible to be picked at a given level (excludes the successor)
-    _simCandidates: function (s) {
+    // ---- seniority guard ----------------------------------------------------
+    // How many job levels BELOW the successor a candidate sits. Positive = more junior, negative
+    // = more senior, null = not answerable. The subtraction flips with the client's numbering,
+    // which is why level_order exists; getting it backwards would filter out exactly the wrong
+    // half of the pool.
+    _levelsBelow: function (emp) {
+      var f = this._simFocusEmp();
+      if (!f || f.jobLevel == null || emp.jobLevel == null) return null;
+      return this._config.level_order === "desc" ? (f.jobLevel - emp.jobLevel) : (emp.jobLevel - f.jobLevel);
+    },
+    _maxBelow: function () {
+      var n = Number(this._config.max_levels_below);
+      return n >= 0 ? n : 2;
+    },
+    // Pairing a director with an intern is not a development pairing however well the behaviour
+    // scores line up, so a complement may not sit more than N levels under the successor. More
+    // senior partners are unconstrained. An unknown level on either side does NOT disqualify:
+    // the guard simply cannot be evaluated there, and quietly emptying the pool would be worse
+    // than not applying it — _renderSim reports where that happens.
+    _levelOk: function (emp) {
+      var g = this._levelsBelow(emp);
+      return g == null || g <= this._maxBelow();
+    },
+    // everyone in an org unit before the seniority guard — the stats need the raw count to be
+    // able to say how many the guard removed
+    _inUnit: function (s) {
       var self = this, st = this.state;
       return st.employees.filter(function (e) {
         return e.roleId === st.chartRole && e.pk !== st.simFocus && self._inScope(e, s || st.simScope);
       });
     },
-    // per level: pool size, how many cover a checked gap, and why a level is unusable
+    // everyone eligible to be picked at a given org level (excludes the successor and anyone
+    // ruled out on seniority)
+    _simCandidates: function (s) {
+      var self = this;
+      return this._inUnit(s).filter(function (e) { return self._levelOk(e); });
+    },
+    // per level: pool size, how many lift EVERY checked gap, and why a level is unusable
     // (field absent from the query vs. blank on this successor's row)
     _scopeStats: function () {
       var self = this, st = this.state, out = {};
       var roleN = st.employees.filter(function (e) { return e.roleId === st.chartRole; });
       this._SCOPES.forEach(function (s) {
-        var c = self._simCandidates(s);
+        var raw = self._inUnit(s), c = raw.filter(function (e) { return self._levelOk(e); });
         var inQuery = s === "org" || !st.orgInQuery || st.orgInQuery[s] !== false;
         out[s] = { unit: self._scopeUnit(s), n: c.length,
-                   covering: c.filter(function (e) { return self._simGapFit(e) > 0; }).length,
+                   // held back purely on seniority — worth naming, or the pool just looks small
+                   tooJunior: raw.length - c.length,
+                   covering: c.filter(function (e) { return self._qualifies(e); }).length,
+                   // best partial cover here, so a dead end can say how close the pool came
+                   bestCover: c.reduce(function (m, e) { return Math.max(m, self._gapCover(e)); }, 0),
                    inQuery: inQuery,
                    // how many rows in view carry this level at all — separates "bad data for this
                    // one person" from "nobody has it"
@@ -1060,17 +1158,48 @@
       var st = this.state;
       return this._SCOPES.filter(function (s) { return s !== "org" && st.orgInQuery && st.orgInQuery[s] === false; });
     },
-    // narrowest level that has anyone in it at all; org is always available
+    // Narrowest level that turns up a real complement — someone who lifts every checked gap.
+    // department -> division -> directorate -> whole organisation, the same cascade the pool bar
+    // offers by hand. When no level qualifies, settle on the narrowest level that has anyone in
+    // it at all, so the pool bar and the dead-end message still describe a real place.
     _defaultScope: function () {
-      var self = this, pick = null;
-      this._SCOPES.forEach(function (s) { if (!pick && s !== "org" && self._simCandidates(s).length) pick = s; });
-      return pick || "org";
+      var self = this, qual = null, any = null;
+      this._SCOPES.forEach(function (s) {
+        var c = self._simCandidates(s);
+        if (!any && s !== "org" && c.length) any = s;
+        if (!qual && c.some(function (e) { return self._qualifies(e); })) qual = s;
+      });
+      return qual || any || "org";
     },
+    // Ranked candidates in the current pool. Qualifiers come first, ordered by their WEAKEST
+    // checked-gap lift, so the best complement is the one that raises the least-covered gap the
+    // most rather than the one with a single outsized gain; average lift breaks ties.
+    // Non-qualifiers stay in the list (a manual pick still needs a rank) but never get suggested.
     _simRanked: function () {
       var self = this;
       return this._simCandidates()
-        .map(function (e) { return { e: e, gf: self._simGapFit(e) }; })
-        .sort(function (a, b) { return b.gf - a.gf; });
+        .map(function (e) {
+          return { e: e, gf: self._simGapFit(e), min: self._weakestLift(e),
+                   cover: self._gapCover(e), ok: self._qualifies(e) };
+        })
+        .sort(function (a, b) {
+          if (a.ok !== b.ok) return a.ok ? -1 : 1;
+          if (a.ok) return (b.min - a.min) || (b.gf - a.gf);
+          return (b.cover - a.cover) || (b.gf - a.gf);
+        });
+    },
+    // Pick the best complement automatically, walking the scope cascade to find one. Stays out of
+    // the way once the user has added or removed anyone by hand (simAuto false) until they switch
+    // successor; a pool they pinned by hand (simScopeAuto false) is searched as-is instead of
+    // re-cascading, so widening to "whole organisation" is not undone on the next data refresh.
+    _autoPick: function () {
+      var st = this.state;
+      st.simAutoPk = null;
+      if (!st.simAuto) return;
+      if (st.simScopeAuto) st.simScope = this._defaultScope();
+      st.simComplements = {};
+      var best = this._simRanked().filter(function (r) { return r.ok; })[0];
+      if (best) { st.simComplements[best.e.pk] = true; st.simAutoPk = best.e.pk; }
     },
     _defaultWeak: function () {
       var st = this.state, f = this._simFocusEmp(); st.simWeak = {};
@@ -1079,6 +1208,15 @@
         .slice(0, 3).forEach(function (b) { st.simWeak[b.id] = true; });
     },
     _simBar: function (v) { return '<span class="cx-barcell"><span class="cx-mini"><i style="width:' + v + '%;background:' + this._color(v) + '"></i></span>' + Math.round(v) + '</span>'; },
+    // "Level 4 · 1 below" — the seniority context that explains why a pool is the size it is
+    _levelText: function (emp, withRel) {
+      if (emp.jobLevel == null) return this.state.levelInQuery ? "level not recorded" : "";
+      var t = "Level <b>" + emp.jobLevel + "</b>";
+      if (!withRel) return t;
+      var g = this._levelsBelow(emp);
+      if (g == null || g === 0) return t;
+      return t + " · " + Math.abs(g) + (g > 0 ? " below" : " above");
+    },
     // narrowest -> widest org placement, e.g. "Rewards · Human Capital · Corporate Services"
     _orgLine: function (emp) {
       var parts = [emp.department, emp.division, emp.directorate].filter(Boolean);
@@ -1107,12 +1245,12 @@
       var st = this.state, i = this._SCOPES.indexOf(st.simScope);
       return this._SCOPES.slice(i + 1).filter(function (s) { return s === "org" || (stats[s].unit && stats[s].n); });
     },
-    // The number is always "how many people there cover the checked gaps" — the actionable
+    // The number is always "how many people there lift every checked gap" — the actionable
     // figure. Pool sizes live in the toolbar select.
     _widenBtn: function (s, stats) {
       var d = stats[s];
       return '<button class="cx-widen" data-scope="' + s + '" title="' + d.covering + ' of ' + d.n +
-        ' there score higher than the successor on the checked behaviours">' +
+        ' there score higher than the successor on every checked behaviour">' +
         (s === "org" ? "Search the whole organisation" : "Widen to " + this._scopeLabel(s).toLowerCase() + (d.unit ? " — " + esc(d.unit) : "")) +
         ' <b>' + d.covering + '</b></button>';
     },
@@ -1128,7 +1266,10 @@
       var stats = this._scopeStats();
       this._renderScopeSelect(stats);
       var rank = this._simRanked();
-      var recIds = {}; rank.filter(function (r) { return r.gf > 0; }).slice(0, 2).forEach(function (r) { recIds[r.e.pk] = true; });
+      // Only candidates that lift EVERY checked gap are recommendable. Ranked list is already
+      // qualifiers-first, but filter rather than slice — two recommendations are worth showing
+      // only if two actually qualify.
+      var recIds = {}; rank.filter(function (r) { return r.ok; }).slice(0, 2).forEach(function (r) { recIds[r.e.pk] = true; });
       var comps = this._simComplementEmps();
       var first = f.name.split(/\s+/)[0];
       var solV = this._simSolo(), teamV = this._simHeadline(), lift = teamV - solV;
@@ -1144,10 +1285,34 @@
 
       var html = '<div class="cx-shell">';
 
-      // Where complements are being searched, and how to widen out of a dead end.
+      // Where complements are being searched, and how to widen out of a dead end. The pool was
+      // reached by the cascade, so name the levels that were tried and came up empty.
+      var skipped = this._SCOPES.slice(0, this._SCOPES.indexOf(st.simScope))
+        .filter(function (s) { return stats[s].unit && stats[s].n; });
       html += '<div class="cx-scopebar"><span>Complements searched in ' + poolTxt +
-        ' — <b>' + cur.n + '</b> assessed against this role, <b>' + cur.covering + '</b> cover the checked gaps.</span>' +
+        ' — <b>' + cur.n + '</b> assessed against this role, <b>' + cur.covering + '</b> ' +
+        (cur.covering === 1 ? "lifts" : "lift") + ' every checked gap.' +
+        (st.simScopeAuto && skipped.length
+          ? ' No one qualified in the ' + skipped.map(function (s) { return esc(self._scopeLabel(s).toLowerCase()); }).join(" or ") + '.'
+          : '') +
+        // a pool shrunk by the seniority guard should say so, not just look thin
+        (cur.tooJunior
+          ? ' <b>' + cur.tooJunior + '</b> held back as more than ' + this._maxBelow() + ' level' +
+            (this._maxBelow() === 1 ? "" : "s") + ' below ' + esc(first) + '.'
+          : '') +
+        '</span>' +
         wider.map(function (s) { return self._widenBtn(s, stats); }).join("") + '</div>';
+
+      // The seniority guard silently not running is the dangerous case — it looks identical to
+      // "nobody was too junior". Say which it is.
+      if (!st.levelInQuery) {
+        html += '<div class="cx-scopebar"><span>Seniority guard off — <b>Job Level</b> is not in this tile&#39;s ' +
+          'query, so complements are not screened for sitting too far below ' + esc(first) +
+          '. Add the dimension to the tile&#39;s selected fields.</span></div>';
+      } else if (f.jobLevel == null) {
+        html += '<div class="cx-scopebar"><span>Seniority guard off for ' + esc(first) +
+          ' — no job level recorded on their current role, so there is nothing to measure a complement against.</span></div>';
+      }
 
       // Org-unit scoping is impossible without the dimensions — say so, and say what to do.
       var missing = this._missingOrgFields();
@@ -1172,12 +1337,22 @@
       } else if (!cur.covering) {
         var unitTxt = st.simScope === "org" ? "the organisation"
           : (cur.unit ? self._scopeLabel(st.simScope).toLowerCase() + " " + esc(cur.unit) : "this level (no unit recorded for " + esc(first) + ")");
+        // The cascade ran to the end and found nobody who lifts all of them, so say how close the
+        // pool came — "best here covers 3 of 4" is what tells you to untick the fourth.
+        var near = cur.n && cur.bestCover
+          ? " The best here lifts <b>" + cur.bestCover + "</b> of the <b>" + chk.n + "</b> checked gaps, not all of them."
+          : "";
+        // "nobody here" reads as a data problem unless the seniority guard is named as the cause
+        var heldBack = cur.tooJunior
+          ? " <b>" + cur.tooJunior + "</b> more " + (cur.tooJunior === 1 ? "was" : "were") +
+            " held back for sitting more than " + this._maxBelow() + " level" + (this._maxBelow() === 1 ? "" : "s") + " below."
+          : "";
         html += '<div class="cx-noresult"><div class="nr-t">No complement found in ' + unitTxt + '.</div>' +
           '<div class="nr-s">' + (cur.n
-            ? "None of the " + cur.n + " people here score higher than " + esc(first) + " on the checked behaviours."
-            : "Nobody here is assessed against this role.") +
+            ? "None of the " + cur.n + " people here score higher than " + esc(first) + " on <b>every</b> checked behaviour." + near + heldBack
+            : "Nobody here is assessed against this role at a workable seniority." + heldBack) +
           (wider.length ? " Widen the search to bring in people from further out." :
-            " There is nobody left to bring in — try checking different behaviours.") + '</div>' +
+            " There is nobody left to bring in — untick a gap that no one can cover, or check different ones.") + '</div>' +
           wider.map(function (s) { return self._widenBtn(s, stats); }).join("") + '</div>';
       }
 
@@ -1185,7 +1360,8 @@
       html += '<div class="cx-card cx-focus"><div class="cx-eyebrow">Successor candidate</div>' +
         '<div class="cx-nm">' + esc(f.name) + '</div><div class="cx-ttl">' + esc(f.jobTitle || f.company || "") + '</div>' +
         (self._orgLine(f) ? '<div class="cx-meta">' + self._orgLine(f) + '</div>' : '') +
-        '<div class="cx-meta">Role fit <b>' + Math.round(f.roleFit) + '%</b></div>' +
+        '<div class="cx-meta">Role fit <b>' + Math.round(f.roleFit) + '%</b>' +
+          (this._levelText(f) ? ' · ' + this._levelText(f) : '') + '</div>' +
         '<div class="cx-fh"><div class="cx-row"><span class="cx-solo">Solo ' + Math.round(solV) + '%</span><span class="cx-arrow">&rarr;</span>' +
         '<span class="cx-team">' + Math.round(teamV) + '%</span><span class="cx-lift ' + (lift > 0.5 ? "cx-pos" : "") + '">' + liftTxt + '</span></div>' +
         '<div class="cx-cap">Average across all ' + st.behaviours.length + ' behaviours</div>' +
@@ -1198,22 +1374,40 @@
       comps.forEach(function (p) {
         var ov = self._wavg(function (b) { return p.beh[b.name] || 0; });
         var outside = !self._inScope(p, st.simScope);
+        var okAll = self._qualifies(p);
+        // A hand-picked partner may only cover part of the selection — say which, rather than
+        // let a healthy-looking average imply full cover.
+        var gapLine = !chk ? ""
+          : okAll
+            ? '<div class="cx-gapfit">Lifts <b>every</b> checked gap — weakest <b>+' + Math.round(self._weakestLift(p)) +
+              '</b>, average <b>+' + Math.round(self._simGapFit(p)) + '</b></div>'
+            : '<div class="cx-gapfit cx-partial">Lifts <b>' + self._gapCover(p) + '</b> of <b>' + chk.n +
+              '</b> checked gaps — average <b>+' + Math.round(self._simGapFit(p)) + '</b></div>';
         html += '<div class="cx-card cx-on"><button class="cx-remove" data-pk="' + esc(p.pk) + '" title="Remove complement">&times;</button>' +
           '<div class="cx-eyebrow">Complement' +
             (outside ? '<span class="cx-outside">outside ' + esc(self._scopeLabel(st.simScope).toLowerCase()) + '</span>' : '') +
           '</div>' +
           '<div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
-          (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '') +
+          (p.pk === st.simAutoPk
+            ? '<div class="cx-rec-line"><span class="cx-rec-pill">Auto-selected — best cover</span></div>'
+            : (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '')) +
           (self._orgLine(p) ? '<div class="cx-meta">' + self._orgLine(p) + '</div>' : '') +
-          '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b></div>' +
-          '<div class="cx-gapfit">Avg gain on checked gaps: <b>+' + Math.round(self._simGapFit(p)) + '</b></div></div>';
+          '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b>' +
+            (self._levelText(p, true) ? ' · ' + self._levelText(p, true) : '') + '</div>' +
+          gapLine + '</div>';
       });
       html += '</div>';
 
-      var sugg = rank.filter(function (r) { return r.gf > 0 && !st.simComplements[r.e.pk]; }).slice(0, 3);
+      // Suggestions are qualifiers only — someone who lifts every checked gap. The number shown
+      // is the WEAKEST of those lifts, which is also the ranking key, so the chips read in order.
+      var sugg = rank.filter(function (r) { return r.ok && !st.simComplements[r.e.pk]; }).slice(0, 3);
       if (sugg.length) {
-        html += '<div class="cx-suggest"><span class="cx-suggest-lbl">Suggested for the checked gaps</span>' +
-          sugg.map(function (r) { return '<button class="cx-sugg" data-pk="' + esc(r.e.pk) + '">' + esc(r.e.name) + ' <span class="cx-sugg-gf">+' + Math.round(r.gf) + '</span></button>'; }).join("") +
+        html += '<div class="cx-suggest"><span class="cx-suggest-lbl">Lifts every checked gap</span>' +
+          sugg.map(function (r) {
+            return '<button class="cx-sugg" data-pk="' + esc(r.e.pk) + '" title="Weakest lift across the ' +
+              chk.n + ' checked gaps; average +' + Math.round(r.gf) + '">' + esc(r.e.name) +
+              ' <span class="cx-sugg-gf">+' + Math.round(r.min) + ' min</span></button>';
+          }).join("") +
           '</div>';
       }
 
@@ -1251,8 +1445,14 @@
       html += '<p class="cx-footnote"><b>Effective</b> = max(candidate, best selected partner) — the team ceiling, so a weaker partner never lowers it. ' +
         '<b>Gain</b> = Effective &minus; candidate, which is why it is never negative: where a partner scores lower, the ceiling is unchanged and the gain is nil. ' +
         'The headline <b>Solo &rarr; Team</b> is the plain average of those two columns down every behaviour, and its lift is the average Gain — the table footer shows both, so the numbers tie out. ' +
-        'Ticking a behaviour marks it a <b>gap to close</b>: that drives the checked-gap average, and ranks suggestions by their average gain on those behaviours (current pool only). ' +
-        'Complements start in the successor&#39;s own department and widen outwards; every candidate must be assessed against the same target role, since behaviour scores come from that assessment.</p>';
+        'Ticking a behaviour marks it a <b>gap to close</b>. A candidate only counts as a complement if it scores higher than the successor on <b>every</b> ticked behaviour — ' +
+        'covering one gap brilliantly while sitting level or lower on the rest does not qualify, however good the average looks. ' +
+        'Qualifiers are ranked by their <b>weakest</b> lift across the ticked gaps, so the pick is the most evenly balanced partner rather than the one with a single outsized gain, and the best one is selected automatically. ' +
+        'The search starts in the successor&#39;s own department and widens to division, then directorate, then the whole organisation, stopping at the first level that holds a qualifier; ' +
+        'choosing a pool or a partner by hand switches that off until you change successor. ' +
+        'A complement may not sit more than <b>' + this._maxBelow() + '</b> job level' + (this._maxBelow() === 1 ? "" : "s") +
+        ' below the successor, so a director is never paired with an intern; more senior partners are always allowed, and anyone with no level recorded is left in rather than dropped. ' +
+        'Every candidate must be assessed against the same target role, since behaviour scores come from that assessment.</p>';
       html += '</div>';
       panel.innerHTML = html;
     }
