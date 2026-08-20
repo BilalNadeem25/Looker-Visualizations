@@ -309,11 +309,7 @@
         '</div>' +
         '<span class="nx-rolelbl"></span>' +
         '<span class="nx-count"></span>' +
-        '<div class="nx-legend"><b>Match score</b>' +
-          '<span class="nx-chip"><i style="background:#2fbf71"></i>High</span>' +
-          '<span class="nx-chip"><i style="background:#f5a623"></i>Medium</span>' +
-          '<span class="nx-chip"><i style="background:#e8503a"></i>Low</span>' +
-        '</div>' +
+        '<div class="nx-legend"></div>' +   // filled by _renderLegend — the bands swap out when unscored
       '</div>' +
       '<div class="nx-stage">' +
         '<div class="nx-chartwrap">' +
@@ -338,6 +334,10 @@
       color_high:   { type: "string", display: "color", label: "High colour",   default: "#2fbf71", section: "Bands", order: 3 },
       color_medium: { type: "string", display: "color", label: "Medium colour", default: "#f5a623", section: "Bands", order: 4 },
       color_low:    { type: "string", display: "color", label: "Low colour",    default: "#e8503a", section: "Bands", order: 5 },
+      // Deliberately outside the red/amber/green scale: an unfiltered chart is plotting no fit at
+      // all, and a band colour there reads as a verdict nobody made.
+      color_unscored: { type: "string", display: "color", label: "Unscored colour (no target role selected)",
+                        default: "#b6bfca", section: "Bands", order: 6 },
       default_role_fit_max: { type: "number", label: "Default 'Role fit max' (blank = data max)", default: null, section: "Scale", order: 1 },
       chart_height_pct: { type: "number", label: "Chart height (% of tile below the toolbar)", default: 86, section: "Scale", order: 2 },
       max_levels_below: { type: "number", label: "Max job levels a complement may sit below the successor",
@@ -369,6 +369,7 @@
         mode: q(".nx-mode"),
         succ: q(".nx-succ"),
         scope: q(".nx-scope"),
+        legend: q(".nx-legend"),
         zoom: q(".nx-zoom")
       };
       this.state = {
@@ -514,6 +515,7 @@
     updateAsync: function (data, element, config, queryResponse, details, done) {
       this._config = Object.assign(
         { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
+          color_unscored: "#b6bfca",
           default_role_fit_max: null, chart_height_pct: 86, max_levels_below: 2, level_order: "asc" },
         config || {});
 
@@ -686,11 +688,7 @@
       }).join("");
       if (st.simFocus != null) this.$.succ.value = st.simFocus;
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
-
-      // role label — multiple target roles are now expected in view
-      this.$.roleLbl.innerHTML = st.rolesInView.length === 1
-        ? "Target role: <b>" + esc(st.rolesInView[0].name) + "</b>"
-        : (st.rolesInView.length > 1 ? "<b>" + st.rolesInView.length + "</b> target roles in view" : "");
+      // the role label and the legend are both set by _draw — they depend on the idle state
 
       this._sizeChart();
       this._draw();
@@ -717,6 +715,20 @@
       st.panX = vbX - wx * nz; st.panY = vbY - wy * nz; st.zoom = nz; this._applyTransform();
     },
 
+    // A red/amber/green key beside a rim of grey dots is its own kind of misleading, so the
+    // legend swaps to a single unscored chip while no target role is selected. Rendered rather
+    // than hard-coded in the markup so the swatches also track the configured band colours.
+    _renderLegend: function (idle) {
+      var c = this._config || {};
+      this.$.legend.innerHTML = idle
+        ? '<b>Fit</b><span class="nx-chip"><i style="background:' + esc(c.color_unscored || "#b6bfca") +
+          '"></i>Not scored</span>'
+        : '<b>Match score</b>' +
+          '<span class="nx-chip"><i style="background:' + esc(c.color_high || "#2fbf71") + '"></i>High</span>' +
+          '<span class="nx-chip"><i style="background:' + esc(c.color_medium || "#f5a623") + '"></i>Medium</span>' +
+          '<span class="nx-chip"><i style="background:' + esc(c.color_low || "#e8503a") + '"></i>Low</span>';
+    },
+
     // ---- chart --------------------------------------------------------------
     _draw: function () {
       var self = this, st = this.state, svg = this.$.svg;
@@ -739,20 +751,29 @@
       var multi = !sim && st.rolesInView.length > 1;
       var idle = multi && st.roleFilterApplied === false;
       var tail = st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "";
-      var spread = list.length + " assessments · " + st.userIds.length + " employees · " +
-                   st.rolesInView.length + " roles · ";
+      var people = st.userIds.length + (st.userIds.length === 1 ? " employee" : " employees");
+      var spread = list.length + " assessments · " + people + " · " + st.rolesInView.length + " roles · ";
       if (sim) {
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
       } else if (!list.length) {
         this.$.count.textContent = "No assessments in view";
       } else if (idle) {
-        this.$.count.textContent = spread + "fit not plotted — filter to a target role" + tail;
+        // Headcount, not the assessment count: with no filter each person appears once per role,
+        // so "500 assessments" describes the query rather than the workforce being looked at.
+        this.$.count.textContent = people + " · no target roles selected — filter to a target role" + tail;
       } else if (multi) {
         this.$.count.textContent = spread + "fit is against each row's own target role" + tail;
       } else {
         this.$.count.textContent = list.length + " employees" + tail;
       }
+      this._renderLegend(idle);
+      // Role label lives here rather than in updateAsync because it depends on the idle state,
+      // which depends on the mode — and the mode can change without new data arriving.
+      this.$.roleLbl.innerHTML = idle ? ""                       // the count line already says it
+        : st.rolesInView.length === 1 ? "Target role: <b>" + esc(st.rolesInView[0].name) + "</b>"
+        : st.rolesInView.length > 1 ? "<b>" + st.rolesInView.length + "</b> target roles in view"
+        : "";
 
       var W = 760, H = 504; svg.setAttribute("viewBox", "0 0 " + W + " " + H);
       var cx = W / 2, cy = H / 2, maxR = Math.min(W, H) / 2 - 34;
@@ -768,9 +789,10 @@
       var flyIn = st.animateIn, flying = [];
       st.animateIn = false;
       var n = list.length;
-      // explicit rather than leaning on _color(0) — that returns the Medium colour if someone
-      // sets the medium threshold to 0
-      var idleFill = (this._config && this._config.color_low) || "#e8503a";
+      // Neutral grey, NOT _color(0) and NOT the Low colour: with no target role selected nothing
+      // has been scored, and a red rim reads as "everyone is a bad fit" — a verdict the chart is
+      // in no position to make.
+      var idleFill = (this._config && this._config.color_unscored) || "#b6bfca";
 
       list.forEach(function (emp, i) {
         var m = idle ? 0 : Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
