@@ -148,7 +148,6 @@
   .nx-zoom button{width:30px; height:30px; border:1px solid var(--line); background:rgba(255,255,255,.95); border-radius:8px; font-size:17px; font-weight:700; line-height:1; color:var(--ink); cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 3px rgba(20,30,45,.08)}
   .nx-zoom button:hover{border-color:#c3ccd8}
   .nx-ring{fill:none; stroke:var(--line); stroke-width:1}
-  .nx-ring-label{fill:#b6bfca; font-size:10px; font-variant-numeric:tabular-nums}
   .nx-bubble{cursor:pointer}
   .nx-bubble circle{transition:cx .55s cubic-bezier(.22,.61,.36,1), cy .55s cubic-bezier(.22,.61,.36,1), r .15s, stroke-width .15s}
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
@@ -328,7 +327,7 @@
           '<input type="range" class="nx-slider nx-maxfit" min="0" max="72" step="1" value="34">' +
         '</div>' +
         '<div class="nx-field nx-searchfield">' +
-          '<label>Search employees</label>' +
+          '<label class="nx-searchlbl">Search employees</label>' +
           '<div class="nx-tagbox">' +
             '<span class="nx-tags"></span>' +
             '<input type="text" class="nx-search" placeholder="Type a name…" autocomplete="off">' +
@@ -341,10 +340,6 @@
             '<button type="button" data-mode="compare" class="on">Compare</button>' +
             '<button type="button" data-mode="simulate">Simulate</button>' +
           '</div>' +
-        '</div>' +
-        '<div class="nx-field nx-simfield">' +
-          '<label>Successor</label>' +
-          '<select class="nx-select nx-succ"></select>' +
         '</div>' +
         '<div class="nx-field nx-simfield">' +
           '<label>Complement pool</label>' +
@@ -413,7 +408,7 @@
         tags: q(".nx-tags"),
         sug: q(".nx-sug"),
         mode: q(".nx-mode"),
-        succ: q(".nx-succ"),
+        searchLbl: q(".nx-searchlbl"),
         scope: q(".nx-scope"),
         legend: q(".nx-legend"),
         zoom: q(".nx-zoom")
@@ -429,6 +424,9 @@
         // choosing a level by hand pins it. Switching successor re-arms both. simAutoPk labels
         // whoever the automatic pick landed on, for the card pill.
         simAuto: true, simScopeAuto: true, simAutoPk: null,
+        // The chipped person exists but has no assessment against the charted role, so there is
+        // deliberately no successor. Distinct from "focus went stale", which re-defaults.
+        simFocusMissing: false,
         // Employee tag search. searchIds are the picked people (userId — names are not unique);
         // searchText is only what is currently typed into the box, and never filters the chart on
         // its own. people/sugList back the autocomplete.
@@ -491,14 +489,10 @@
         st.mode = b.getAttribute("data-mode");
         Array.prototype.forEach.call($.mode.querySelectorAll("button"), function (x) { x.classList.toggle("on", x === b); });
         $.wrap.classList.toggle("simmode", st.mode === "simulate");
-        self._draw();
-      });
-      $.succ.addEventListener("change", function () {
-        st.simFocus = $.succ.value;
-        // a new successor is a fresh problem: new gaps, a different org unit, and the automatic
-        // pick is back in charge until this user overrides it again
-        st.simAuto = true; st.simScopeAuto = true;
-        self._defaultWeak(); self._autoPick(); self._draw();
+        // Entering simulate collapses the selection to one person (the successor) and, if nothing
+        // was searched, writes the defaulted successor back into the box. Leaving it keeps that
+        // person chipped, so the chart you return to is filtered to whoever you were analysing.
+        self._afterTagChange();
       });
       $.scope.addEventListener("change", function () {
         st.simScope = $.scope.value;
@@ -809,8 +803,19 @@
       var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
                                  .sort(function (a, b) { return b.roleFit - a.roleFit; });
       if (roleChanged) { st.simComplements = {}; st.simAuto = true; st.simScopeAuto = true; }
-      if (roleChanged || !st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole) {
-        st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
+      // In simulate mode the tag box owns the successor, so resolve the chip first; it may also
+      // write a defaulted successor back into the box.
+      var moved = this._syncSuccessor();
+      // "Stale" is a focus pointing at a row that no longer exists or belongs to another role.
+      // simFocusMissing is NOT stale — it is a deliberate no-successor state (the chipped person
+      // has no assessment against this role) and must survive rather than re-default.
+      var stale = !st.simFocusMissing &&
+                  (!st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole);
+      if (roleChanged || moved || stale) {
+        if (stale) {
+          st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
+          if (st.mode === "simulate" && st.simFocus) st.searchIds = [st.byPair[st.simFocus].userId];
+        }
         // a defaulted successor was never the user's choice, so nothing here is theirs to keep
         st.simAuto = true; st.simScopeAuto = true;
         this._defaultWeak();
@@ -823,10 +828,6 @@
         if (st.simScope !== "org" && !this._simCandidates(st.simScope).length) st.simScope = this._defaultScope();
         this._autoPick();                   // no-op unless the pick is still system-managed
       }
-      this.$.succ.innerHTML = roleEmps.map(function (e) {
-        return '<option value="' + esc(e.pk) + '">' + esc(e.name) + (e.jobTitle ? " — " + esc(e.jobTitle) : "") + '</option>';
-      }).join("");
-      if (st.simFocus != null) this.$.succ.value = st.simFocus;
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
       this._renderTags(); this._renderSug();   // chips carry names, which only exist once rows land
       // the role label and the legend are both set by _draw — they depend on the idle state
@@ -856,6 +857,42 @@
       st.panX = vbX - wx * nz; st.panY = vbY - wy * nz; st.zoom = nz; this._applyTransform();
     },
 
+    // ---- successor selection -------------------------------------------------
+    // Simulate has no dropdown of its own: the successor IS the tag box's selection, so there is
+    // one place to look someone up in either mode. A successor is one person, so the box is
+    // single-select here — _addTag replaces rather than appends while simulating.
+    //
+    // The box is also kept HONEST: when the mode defaults a successor (on entry, or after the
+    // role filter changes) that person is written back as the chip. The field always names
+    // whoever the panel is actually analysing — the old dropdown could silently disagree with
+    // what had been searched, which is what made a card read as the wrong person's role fit.
+    //
+    // Returns true when the successor actually moved, so callers know to re-run the pickers.
+    _syncSuccessor: function () {
+      var st = this.state;
+      if (st.mode !== "simulate") return false;
+      var prev = st.simFocus;
+      if (st.searchIds.length > 1) st.searchIds = st.searchIds.slice(0, 1);
+      var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
+                                 .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      st.simFocusMissing = false;
+      if (!roleEmps.length) { st.simFocus = null; return prev !== null; }
+      var want = st.searchIds.length ? st.searchIds[0] + "::" + st.chartRole : null;
+      if (want && st.byPair[want]) {
+        st.simFocus = want;
+      } else if (want) {
+        // Chipped somebody who has no assessment against the charted role. Do NOT quietly swap in
+        // the top candidate — that silent substitution is exactly what made the panel describe a
+        // different person from the one searched. Leave the chip standing and say so instead.
+        st.simFocus = null;
+        st.simFocusMissing = true;
+      } else {
+        st.simFocus = roleEmps[0].pk;
+        st.searchIds = [st.byPair[st.simFocus].userId];
+      }
+      return st.simFocus !== prev;
+    },
+
     // ---- employee tag search -----------------------------------------------
     // Chips are rendered into their own <span>, never by rebuilding the whole field: the <input>
     // has to survive every keystroke or it loses focus and the caret mid-word.
@@ -872,7 +909,11 @@
       }).join("") + (st.searchIds.length > 1
         ? '<button type="button" class="nx-clearall">Clear all</button>' : "");
       // The placeholder would sit under the chips and read as a second, empty field.
-      this.$.search.placeholder = st.searchIds.length ? "" : "Type a name…";
+      var sim = st.mode === "simulate";
+      this.$.search.placeholder = st.searchIds.length ? "" : (sim ? "Search a successor…" : "Type a name…");
+      // One box, two jobs — say which one it is doing, or a single chip in simulate mode looks
+      // like a search that failed to filter anything.
+      this.$.searchLbl.textContent = sim ? "Successor" : "Search employees";
     },
     // Autocomplete over the whole workforce. Capped at SUG_MAX because at 2000+ employees an
     // empty query would otherwise build two thousand DOM nodes on every focus.
@@ -909,23 +950,41 @@
     },
     _addTag: function (uid) {
       var st = this.state;
-      if (!uid || st.searchIds.indexOf(uid) >= 0) return;
-      st.searchIds.push(uid);
+      if (!uid) return;
+      if (st.mode === "simulate") {
+        // A successor is one person, so the box is single-select here: picking replaces.
+        if (st.searchIds.length === 1 && st.searchIds[0] === uid) return;
+        st.searchIds = [uid];
+      } else {
+        if (st.searchIds.indexOf(uid) >= 0) return;
+        st.searchIds.push(uid);
+      }
       // Clear the query after a pick, so the next name starts from the full list rather than
       // from the leftovers of the last one.
       st.searchText = ""; this.$.search.value = ""; st.sugIdx = 0;
-      this._renderTags(); this._renderSug(); this._draw();
+      this._afterTagChange();
     },
     _removeTag: function (uid) {
       var st = this.state, i = st.searchIds.indexOf(String(uid));
       if (i < 0) return;
       st.searchIds.splice(i, 1);
-      this._renderTags(); this._renderSug(); this._draw();
+      this._afterTagChange();
     },
     _clearTags: function () {
       var st = this.state;
       if (!st.searchIds.length) return;
       st.searchIds = [];
+      this._afterTagChange();
+    },
+    // _syncSuccessor may rewrite searchIds (it writes a defaulted successor back as the chip), so
+    // the chips are always rendered AFTER it runs, never before.
+    _afterTagChange: function () {
+      if (this._syncSuccessor()) {
+        // A new successor is a fresh problem: different gaps, a different org unit, and the
+        // automatic pickers are back in charge until this user overrides them again.
+        this.state.simAuto = true; this.state.simScopeAuto = true;
+        this._defaultWeak(); this._autoPick();
+      }
       this._renderTags(); this._renderSug(); this._draw();
     },
 
@@ -975,12 +1034,13 @@
       // buried in the crowd you did not. In simulate mode the successor and the chosen
       // complements are always kept — they are the subject of that view, and the panel beside the
       // chart describes them, so a search must never make them vanish.
-      var picked = st.searchIds;
-      if (picked.length) {
-        var pick = {}; picked.forEach(function (u) { pick[u] = 1; });
-        list = list.filter(function (e) {
-          return pick[e.userId] || (sim && (e.pk === st.simFocus || !!st.simComplements[e.pk]));
-        });
+      // In simulate mode the chip names the SUCCESSOR, it does not filter: the chart is the
+      // candidate pool you pick complements out of, and filtering it to one person would leave
+      // nothing to pick. Compare mode is where the chips subset the chart.
+      var filtering = !sim && st.searchIds.length > 0;
+      if (filtering) {
+        var pick = {}; st.searchIds.forEach(function (u) { pick[u] = 1; });
+        list = list.filter(function (e) { return !!pick[e.userId]; });
       }
       // Idle plots the WORKFORCE, so one dot per person — not one per assessment row. Without
       // this someone assessed against four roles is four dots on the rim while the count line
@@ -1007,8 +1067,8 @@
       } else if (!list.length) {
         // "No assessments in view" would be a lie when the chart is empty because the search
         // narrowed it to people who have none — that reads as a broken tile rather than a filter.
-        this.$.count.textContent = picked.length
-          ? "No matches for the selected " + (picked.length === 1 ? "employee" : "employees")
+        this.$.count.textContent = filtering
+          ? "No matches for the selected " + (st.searchIds.length === 1 ? "employee" : "employees")
           : "No assessments in view";
       } else if (idle) {
         // Headcount alone, and nothing else. NOT the assessment count: with no filter a person
@@ -1018,7 +1078,7 @@
         // legend's single Not-scored chip. Repeating either here was clutter.
         // The one exception is an active search: the chart is then showing a deliberate subset,
         // and the headcount alone would contradict the handful of dots on screen.
-        this.$.count.textContent = picked.length
+        this.$.count.textContent = filtering
           ? list.length + " of " + head + " employees"
           : people;
       } else if (multi) {
@@ -1037,9 +1097,14 @@
       var W = 760, H = 504; svg.setAttribute("viewBox", "0 0 " + W + " " + H);
       var cx = W / 2, cy = H / 2, maxR = Math.min(W, H) / 2 - 34;
       st.chartRoot = svgEl("g", {}); svg.appendChild(st.chartRoot); this._applyTransform();
+      // Rings only, no percentage labels. Radius encodes the MATCH SCORE, which is role fit
+      // rescaled against the Role fit max slider — not an absolute percentage. At the default
+      // max (the highest role fit in the data) the strongest person lands dead centre and would
+      // have been labelled 100%, and every other ring moves as the slider moves. Numbers that
+      // authoritative, sitting on a scale the user can drag, invited a reading the chart cannot
+      // support. The rings stay as spacing guides; the real figure is on the card.
       [1, 0.75, 0.5, 0.25].forEach(function (f) {
         st.chartRoot.appendChild(svgEl("circle", { class: "nx-ring", cx: cx, cy: cy, r: maxR * f }));
-        var lb = svgEl("text", { class: "nx-ring-label", x: cx + 4, y: cy - maxR * f + 13 }); lb.textContent = Math.round((1 - f) * 100) + "%"; st.chartRoot.appendChild(lb);
       });
       // Entrance: after a target-role filter change (or first load) every node spawns a step
       // further out along its own angle and glides back into place, swept in fit order
@@ -1494,6 +1559,11 @@
     _autoPick: function () {
       var st = this.state;
       st.simAutoPk = null;
+      // No successor means no gaps to cover, and every ranking helper below dereferences the
+      // focus. Guarding once here keeps _defaultScope / _simRanked / _qualifies safe rather than
+      // null-checking each of them — reachable now that a chipped person may not be assessed
+      // against the charted role.
+      if (!this._simFocusEmp()) { st.simComplements = {}; return; }
       if (!st.simAuto) return;
       if (st.simScopeAuto) st.simScope = this._defaultScope();
       st.simComplements = {};
@@ -1559,7 +1629,19 @@
       var f = this._simFocusEmp();
       if (!f || !st.behaviours.length) {
         this.$.scope.innerHTML = "";
-        panel.innerHTML = '<div class="nx-empty"><p>No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.</p></div>';
+        // Two very different causes, and the old single message blamed the model for both. A
+        // chipped person who is simply not assessed against this role is a one-click fix, not a
+        // missing field.
+        var who = null;
+        if (st.simFocusMissing && st.searchIds.length) {
+          who = (st.people.filter(function (p) { return p.userId === st.searchIds[0]; })[0] || {}).name;
+        }
+        var roleNm = (st.rolesInView.filter(function (r) { return r.id === st.chartRole; })[0] || {}).name;
+        panel.innerHTML = '<div class="nx-empty"><p>' + (who
+          ? esc(who) + ' has no assessment against ' + (roleNm ? '<b>' + esc(roleNm) + '</b>' : 'the charted role') +
+            ', so there is nothing to simulate. Search someone who is assessed against it.'
+          : 'No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.') +
+          '</p></div>';
         return;
       }
       var stats = this._scopeStats();
