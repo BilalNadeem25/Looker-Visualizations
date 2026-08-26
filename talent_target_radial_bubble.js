@@ -133,6 +133,11 @@
   .nx-legend b{color:var(--ink); font-weight:700}
   .nx-chip{display:inline-flex; align-items:center; gap:6px}
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
+  /* Pool key (simulate only). Neutral grey at the chart's own two opacities, so the swatches read
+     as "brightness means eligibility" rather than adding a fifth colour to the key. */
+  .nx-leg-sep{margin-left:4px}
+  .nx-leg-in{background:#6b7684; opacity:.9}
+  .nx-leg-out{background:#6b7684; opacity:.12}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
@@ -991,15 +996,25 @@
     // A red/amber/green key beside a rim of grey dots is its own kind of misleading, so the
     // legend swaps to a single unscored chip while no target role is selected. Rendered rather
     // than hard-coded in the markup so the swatches also track the configured band colours.
-    _renderLegend: function (idle) {
+    _renderLegend: function (idle, sim) {
       var c = this._config || {};
-      this.$.legend.innerHTML = idle
-        ? '<b>Fit</b><span class="nx-chip"><i style="background:' + esc(c.color_unscored || "#b6bfca") +
-          '"></i>Not scored</span>'
-        : '<b>Match score</b>' +
-          '<span class="nx-chip"><i style="background:' + esc(c.color_high || "#2fbf71") + '"></i>High</span>' +
-          '<span class="nx-chip"><i style="background:' + esc(c.color_medium || "#f5a623") + '"></i>Medium</span>' +
-          '<span class="nx-chip"><i style="background:' + esc(c.color_low || "#e8503a") + '"></i>Low</span>';
+      if (idle) {
+        this.$.legend.innerHTML = '<b>Fit</b><span class="nx-chip"><i style="background:' +
+          esc(c.color_unscored || "#b6bfca") + '"></i>Not scored</span>';
+        return;
+      }
+      var bands = '<b>Match score</b>' +
+        '<span class="nx-chip"><i style="background:' + esc(c.color_high || "#2fbf71") + '"></i>High</span>' +
+        '<span class="nx-chip"><i style="background:' + esc(c.color_medium || "#f5a623") + '"></i>Medium</span>' +
+        '<span class="nx-chip"><i style="background:' + esc(c.color_low || "#e8503a") + '"></i>Low</span>';
+      // Simulate draws a SECOND encoding on top of the colour bands — opacity marks who is
+      // eligible to be a complement — and nothing on screen said so. Two levels of brightness
+      // with no key reads as some bubbles being arbitrarily highlighted.
+      this.$.legend.innerHTML = bands + (sim
+        ? '<b class="nx-leg-sep">Pool</b>' +
+          '<span class="nx-chip"><i class="nx-leg-in"></i>Eligible</span>' +
+          '<span class="nx-chip"><i class="nx-leg-out"></i>Not eligible</span>'
+        : "");
     },
 
     // ---- chart --------------------------------------------------------------
@@ -1086,7 +1101,7 @@
       } else {
         this.$.count.textContent = list.length + " employees" + tail;
       }
-      this._renderLegend(idle);
+      this._renderLegend(idle, sim);
       // Role label lives here rather than in updateAsync because it depends on the idle state,
       // which depends on the mode — and the mode can change without new data arriving.
       this.$.roleLbl.innerHTML = idle ? ""                       // the count line already says it
@@ -1145,19 +1160,23 @@
         // anything, because anything it excluded is not in `list` at all.
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
           "fill-opacity": inPool ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+        // In simulate mode a bubble is in one of four states, and until now only the EXCLUDED one
+        // said so on hover. That left every bright dot unexplained: the pool is lit at full
+        // opacity whether or not anyone has picked it, so an eligible candidate looked exactly
+        // like a chosen complement and neither announced itself. Name all four.
+        var simTag = !sim ? ""
+          : isFocus ? " · successor"
+          : isComp ? " · complement — click to remove"
+          : inPool ? " · in the complement pool — click to add"
+          : tooJunior ? " · not eligible — " + self._levelsBelow(emp) + " levels below the successor"
+          : " · not eligible — outside " + self._scopeLabel(st.simScope).toLowerCase();
         var ti = svgEl("title", {});
         // Idle nodes sit on the rim because nothing has been scored, not because they scored 0 —
         // quoting a fit here would attach a verdict to a role the user never picked.
         ti.textContent = idle
           ? emp.name + (emp.jobTitle ? " — " + emp.jobTitle : "") +
             (emp.unscored ? " · not assessed" : " · not scored against a selected role")
-          : emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" +
-            // say WHICH rule shut a bubble out — org unit and seniority look identical when greyed
-            (sim && !inPool
-              ? (tooJunior
-                  ? " · " + self._levelsBelow(emp) + " levels below the successor"
-                  : " · outside " + self._scopeLabel(st.simScope).toLowerCase())
-              : "");
+          : emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" + simTag;
         g.appendChild(ti);
         if (!idle) g.addEventListener("click", function () {
           if (st.dragMoved) return;
