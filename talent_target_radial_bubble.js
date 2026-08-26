@@ -95,8 +95,36 @@
   .nx-sliderfield label b{color:var(--accent); font-variant-numeric:tabular-nums}
   .nx-slider{width:180px; accent-color:var(--accent); cursor:pointer; margin-top:5px}
   .nx-slider:focus-visible{outline:2px solid var(--accent); outline-offset:3px}
-  .nx-search{font-size:14px; padding:7px 11px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); min-width:170px}
-  .nx-search:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  /* ---- employee tag search ----
+     A plain text box does not scale past a few hundred people: one substring matched an unknown
+     number of bubbles and there was no way to hold two people on screen at once. This is a token
+     field — pick people from an autocomplete, each becomes a removable chip, and the chart shows
+     those people ONLY. The field owns the border so the chips sit inside it. */
+  .nx-searchfield{position:relative}
+  .nx-tagbox{display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:230px; max-width:400px;
+    border:1px solid var(--line); border-radius:9px; background:#fff; padding:4px 6px; cursor:text}
+  .nx-tagbox:focus-within{outline:2px solid var(--accent); outline-offset:1px}
+  .nx-tag{display:inline-flex; align-items:center; gap:4px; background:var(--accent-soft); color:var(--accent);
+    border-radius:7px; padding:2px 3px 2px 8px; font-size:12px; font-weight:700; max-width:170px}
+  .nx-tag i{font-style:normal; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nx-tag button{border:none; background:none; color:var(--accent); font-size:14px; line-height:1;
+    cursor:pointer; padding:0 3px; opacity:.6}
+  .nx-tag button:hover{opacity:1}
+  .nx-search{font-size:14px; padding:3px 4px; border:none; outline:none; background:none; color:var(--ink);
+    min-width:90px; flex:1 1 90px}
+  .nx-clearall{border:none; background:none; color:var(--muted); font-size:11px; font-weight:700;
+    text-decoration:underline; cursor:pointer; padding:0 2px; letter-spacing:.02em}
+  .nx-clearall:hover{color:var(--ink)}
+  .nx-sug{position:absolute; z-index:8; top:100%; left:0; margin-top:5px; min-width:290px; max-width:400px;
+    background:#fff; border:1px solid var(--line); border-radius:11px; box-shadow:0 10px 28px rgba(20,30,45,.18);
+    padding:5px; max-height:270px; overflow:auto}
+  .nx-sug[hidden]{display:none}
+  .nx-sugopt{display:block; width:100%; text-align:left; border:none; background:none; padding:7px 9px;
+    border-radius:8px; font-size:12.5px; color:var(--ink); cursor:pointer; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap}
+  .nx-sugopt:hover,.nx-sugopt.on{background:var(--line-soft)}
+  .nx-sugopt .jt{color:#9aa4b0}
+  .nx-sugnote{padding:7px 10px; font-size:11.5px; color:#9aa4b0}
   .nx-select{font-size:14px; padding:7px 11px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); min-width:210px; cursor:pointer}
   .nx-select:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
   .nx-count{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
@@ -299,9 +327,13 @@
           '<label>Role fit max — <b class="nx-maxfit-val">34</b></label>' +
           '<input type="range" class="nx-slider nx-maxfit" min="0" max="72" step="1" value="34">' +
         '</div>' +
-        '<div class="nx-field">' +
-          '<label>Search employee</label>' +
-          '<input type="search" class="nx-search" placeholder="Type a name…" autocomplete="off">' +
+        '<div class="nx-field nx-searchfield">' +
+          '<label>Search employees</label>' +
+          '<div class="nx-tagbox">' +
+            '<span class="nx-tags"></span>' +
+            '<input type="text" class="nx-search" placeholder="Type a name…" autocomplete="off">' +
+          '</div>' +
+          '<div class="nx-sug" hidden></div>' +
         '</div>' +
         '<div class="nx-field">' +
           '<label>Mode</label>' +
@@ -377,6 +409,9 @@
         slider: q(".nx-maxfit"),
         sliderVal: q(".nx-maxfit-val"),
         search: q(".nx-search"),
+        tagbox: q(".nx-tagbox"),
+        tags: q(".nx-tags"),
+        sug: q(".nx-sug"),
         mode: q(".nx-mode"),
         succ: q(".nx-succ"),
         scope: q(".nx-scope"),
@@ -394,7 +429,11 @@
         // choosing a level by hand pins it. Switching successor re-arms both. simAutoPk labels
         // whoever the automatic pick landed on, for the card pill.
         simAuto: true, simScopeAuto: true, simAutoPk: null,
-        search: "", maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
+        // Employee tag search. searchIds are the picked people (userId — names are not unique);
+        // searchText is only what is currently typed into the box, and never filters the chart on
+        // its own. people/sugList back the autocomplete.
+        searchIds: [], searchText: "", people: [], sugList: [], sugOpen: false, sugIdx: 0,
+        maxRoleFit: null, zoom: 1, panX: 0, panY: 0, chartRoot: null, animateIn: false,
         // shared across cards so rows stay aligned when comparing. Personal information starts
         // folded: it is PII that nobody needs on screen by default, and unfolded it would push
         // the competency and skill rows of a three-card comparison out of view.
@@ -407,7 +446,45 @@
         st.maxRoleFit = Number($.slider.value); $.sliderVal.textContent = $.slider.value; self._draw();
       });
       $.search.addEventListener("input", function () {
-        st.search = $.search.value.trim().toLowerCase(); self._draw();
+        st.searchText = $.search.value; st.sugIdx = 0; st.sugOpen = true; self._renderSug();
+      });
+      $.search.addEventListener("focus", function () { st.sugOpen = true; self._renderSug(); });
+      // Closing on blur is safe because the dropdown swallows its own mousedown below, so
+      // clicking an option never blurs the input in the first place.
+      $.search.addEventListener("blur", function () { st.sugOpen = false; self._renderSug(); });
+      $.search.addEventListener("keydown", function (e) {
+        var k = e.key, n = st.sugList.length;
+        if (k === "ArrowDown" || k === "ArrowUp") {
+          if (!n) return;
+          e.preventDefault();
+          st.sugOpen = true;
+          st.sugIdx = (st.sugIdx + (k === "ArrowDown" ? 1 : n - 1)) % n;
+          self._renderSug();
+        } else if (k === "Enter") {
+          if (st.sugOpen && n) { e.preventDefault(); self._addTag(st.sugList[st.sugIdx].userId); }
+        } else if (k === "Escape") {
+          st.sugOpen = false; self._renderSug();
+        } else if (k === "Backspace" && !$.search.value && st.searchIds.length) {
+          // Standard token-field behaviour: backspace on an empty box eats the last chip.
+          self._removeTag(st.searchIds[st.searchIds.length - 1]);
+        }
+      });
+      // Clicking anywhere in the box (the padding, a gap between chips) focuses the input, which
+      // is what makes the whole thing feel like one field rather than chips beside a text box.
+      $.tagbox.addEventListener("mousedown", function (e) {
+        if (e.target === $.tagbox || e.target === $.tags) { e.preventDefault(); $.search.focus(); }
+      });
+      $.tags.addEventListener("click", function (e) {
+        // Clear-all carries no data-uid, so it has to be tested before the per-chip button.
+        if (e.target.closest(".nx-clearall")) { self._clearTags(); return; }
+        var b = e.target.closest("button[data-uid]"); if (!b) return;
+        self._removeTag(b.getAttribute("data-uid"));
+      });
+      // preventDefault keeps focus in the input, so the blur handler never races the click.
+      $.sug.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      $.sug.addEventListener("click", function (e) {
+        var b = e.target.closest("button[data-uid]"); if (!b) return;
+        self._addTag(b.getAttribute("data-uid"));
       });
       $.mode.addEventListener("click", function (e) {
         var b = e.target.closest("button[data-mode]"); if (!b) return;
@@ -674,6 +751,19 @@
       var seenScored = {};
       emps.forEach(function (e) { if (!e.unscored) seenScored[e.userId] = true; });
       st.assessedCount = Object.keys(seenScored).length;
+
+      // Autocomplete source: one entry per person, name-sorted. Built here rather than in the
+      // dropdown so a 2000-person list is walked once per query, not once per keystroke.
+      var seenPp = {};
+      st.people = emps.filter(function (e) {
+        if (seenPp[e.userId]) return false;
+        return (seenPp[e.userId] = true);
+      }).map(function (e) {
+        return { userId: e.userId, name: e.name, jobTitle: e.jobTitle };
+      }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+      // A filter change can retire people who are still chipped. Drop those rather than leave a
+      // chip that silently matches nothing and makes the chart look empty for no visible reason.
+      st.searchIds = st.searchIds.filter(function (u) { return seenPp[u]; });
       st.rolesInView = Object.keys(roleNames)
         .map(function (id) { return { id: id, name: roleNames[id] }; })
         .sort(function (a, b) { return a.name.localeCompare(b.name); });
@@ -738,6 +828,7 @@
       }).join("");
       if (st.simFocus != null) this.$.succ.value = st.simFocus;
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
+      this._renderTags(); this._renderSug();   // chips carry names, which only exist once rows land
       // the role label and the legend are both set by _draw — they depend on the idle state
 
       this._sizeChart();
@@ -763,6 +854,79 @@
       var st = this.state, nz = Math.max(0.5, Math.min(6, st.zoom * factor));
       var wx = (vbX - st.panX) / st.zoom, wy = (vbY - st.panY) / st.zoom;
       st.panX = vbX - wx * nz; st.panY = vbY - wy * nz; st.zoom = nz; this._applyTransform();
+    },
+
+    // ---- employee tag search -----------------------------------------------
+    // Chips are rendered into their own <span>, never by rebuilding the whole field: the <input>
+    // has to survive every keystroke or it loses focus and the caret mid-word.
+    _renderTags: function () {
+      var st = this.state, byId = {};
+      st.people.forEach(function (p) { byId[p.userId] = p; });
+      this.$.tags.innerHTML = st.searchIds.map(function (uid) {
+        var p = byId[uid];
+        // Two people can share a name in an org this size, and the chip only has room for one
+        // line — the job title rides in the tooltip so a duplicate is still identifiable.
+        var full = (p ? p.name : uid) + (p && p.jobTitle ? " — " + p.jobTitle : "");
+        return '<span class="nx-tag" title="' + esc(full) + '"><i>' + esc(p ? p.name : uid) + '</i>' +
+               '<button type="button" data-uid="' + esc(uid) + '" title="Remove">&times;</button></span>';
+      }).join("") + (st.searchIds.length > 1
+        ? '<button type="button" class="nx-clearall">Clear all</button>' : "");
+      // The placeholder would sit under the chips and read as a second, empty field.
+      this.$.search.placeholder = st.searchIds.length ? "" : "Type a name…";
+    },
+    // Autocomplete over the whole workforce. Capped at SUG_MAX because at 2000+ employees an
+    // empty query would otherwise build two thousand DOM nodes on every focus.
+    _renderSug: function () {
+      var st = this.state, SUG_MAX = 50;
+      var q = clean(st.searchText).toLowerCase();
+      var picked = {}; st.searchIds.forEach(function (u) { picked[u] = 1; });
+      var all = st.people.filter(function (p) {
+        return !picked[p.userId] && (!q || p.name.toLowerCase().indexOf(q) >= 0);
+      });
+      st.sugList = all.slice(0, SUG_MAX);
+      if (st.sugIdx >= st.sugList.length) st.sugIdx = 0;
+      if (!st.sugOpen) { this.$.sug.hidden = true; return; }
+      this.$.sug.hidden = false;
+      if (!st.people.length) {
+        this.$.sug.innerHTML = '<div class="nx-sugnote">No employees in view.</div>';
+        return;
+      }
+      if (!all.length) {
+        this.$.sug.innerHTML = '<div class="nx-sugnote">' +
+          (q ? 'No employee matches “' + esc(st.searchText) + '”.' : 'Everyone is already selected.') +
+          '</div>';
+        return;
+      }
+      this.$.sug.innerHTML = st.sugList.map(function (p, i) {
+        return '<button type="button" class="nx-sugopt' + (i === st.sugIdx ? " on" : "") +
+               '" data-uid="' + esc(p.userId) + '">' + esc(p.name) +
+               (p.jobTitle ? ' <span class="jt">— ' + esc(p.jobTitle) + '</span>' : "") + '</button>';
+      }).join("") + (all.length > SUG_MAX
+        ? '<div class="nx-sugnote">' + (all.length - SUG_MAX) + ' more — keep typing to narrow.</div>'
+        : "");
+      var on = this.$.sug.querySelector(".nx-sugopt.on");
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+    },
+    _addTag: function (uid) {
+      var st = this.state;
+      if (!uid || st.searchIds.indexOf(uid) >= 0) return;
+      st.searchIds.push(uid);
+      // Clear the query after a pick, so the next name starts from the full list rather than
+      // from the leftovers of the last one.
+      st.searchText = ""; this.$.search.value = ""; st.sugIdx = 0;
+      this._renderTags(); this._renderSug(); this._draw();
+    },
+    _removeTag: function (uid) {
+      var st = this.state, i = st.searchIds.indexOf(String(uid));
+      if (i < 0) return;
+      st.searchIds.splice(i, 1);
+      this._renderTags(); this._renderSug(); this._draw();
+    },
+    _clearTags: function () {
+      var st = this.state;
+      if (!st.searchIds.length) return;
+      st.searchIds = [];
+      this._renderTags(); this._renderSug(); this._draw();
     },
 
     // A red/amber/green key beside a rim of grey dots is its own kind of misleading, so the
@@ -806,6 +970,18 @@
       var idle = !sim && (hasUnscored || (multi && st.roleFilterApplied === false));
       var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
                    .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      // Search REMOVES rather than dims. Dimming worked when a chart held tens of people, but a
+      // faded dot still occupies its rim slot, so at 2000 employees the people you asked for stay
+      // buried in the crowd you did not. In simulate mode the successor and the chosen
+      // complements are always kept — they are the subject of that view, and the panel beside the
+      // chart describes them, so a search must never make them vanish.
+      var picked = st.searchIds;
+      if (picked.length) {
+        var pick = {}; picked.forEach(function (u) { pick[u] = 1; });
+        list = list.filter(function (e) {
+          return pick[e.userId] || (sim && (e.pk === st.simFocus || !!st.simComplements[e.pk]));
+        });
+      }
       // Idle plots the WORKFORCE, so one dot per person — not one per assessment row. Without
       // this someone assessed against four roles is four dots on the rim while the count line
       // says "561 employees", and the two never agree.
@@ -829,14 +1005,22 @@
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
       } else if (!list.length) {
-        this.$.count.textContent = "No assessments in view";
+        // "No assessments in view" would be a lie when the chart is empty because the search
+        // narrowed it to people who have none — that reads as a broken tile rather than a filter.
+        this.$.count.textContent = picked.length
+          ? "No matches for the selected " + (picked.length === 1 ? "employee" : "employees")
+          : "No assessments in view";
       } else if (idle) {
         // Headcount alone, and nothing else. NOT the assessment count: with no filter a person
         // appears once per role, so "500 assessments" would describe the query rather than the
         // workforce. Everything that used to trail this line has a better home now — the call to
         // action is the panel message under the chart, and "nothing here is scored" is the
         // legend's single Not-scored chip. Repeating either here was clutter.
-        this.$.count.textContent = people;
+        // The one exception is an active search: the chart is then showing a deliberate subset,
+        // and the headcount alone would contradict the handful of dots on screen.
+        this.$.count.textContent = picked.length
+          ? list.length + " of " + head + " employees"
+          : people;
       } else if (multi) {
         this.$.count.textContent = spread + "fit is against each row's own target role" + tail;
       } else {
@@ -891,10 +1075,11 @@
         // competencies or skills to fall back on either. Dropping the affordance entirely beats
         // opening a card that has to apologise for being empty.
         if (idle) cls += " inert";
-        var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
+        // Fading is now reserved for "outside the complement pool" — search no longer dims
+        // anything, because anything it excluded is not in `list` at all.
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
-          "fill-opacity": (hit && inPool) ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
+          "fill-opacity": inPool ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {});
         // Idle nodes sit on the rim because nothing has been scored, not because they scored 0 —
         // quoting a fit here would attach a verdict to a role the user never picked.
