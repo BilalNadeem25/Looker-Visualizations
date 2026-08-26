@@ -2,6 +2,10 @@
   "use strict";
 
   var SVGNS = "http://www.w3.org/2000/svg";
+  // Reserved roleId for people with no assessment against any target role. Every population
+  // filter in simulate mode already narrows to `roleId === chartRole`, and chartRole is only
+  // ever a real role id, so this value keeps them out of those pools by construction.
+  var NO_ROLE = "__none__";
 
   // ---- pure helpers ---------------------------------------------------------
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
@@ -121,6 +125,13 @@
   .nx-bubble circle{transition:cx .55s cubic-bezier(.22,.61,.36,1), cy .55s cubic-bezier(.22,.61,.36,1), r .15s, stroke-width .15s}
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
   .nx-bubble.sel circle{stroke:var(--ink); stroke-width:2.5}
+  /* idle — no target role selected, so no node opens a card. Drop the pointer and soften the
+     hover ring to grey: the dark ring is the affordance that says "this opens something", but
+     some hover feedback has to stay, or there is no way to tell which of 561 dots the <title>
+     tooltip belongs to. Hit-testing must stay live for that tooltip to appear at all, so no
+     pointer-events:none here — the click listener is simply never attached. */
+  .nx-bubble.inert{cursor:default}
+  .nx-bubble.inert:hover circle{stroke:#8c96a3; stroke-width:1.5}
 
   /* flex:1 0 auto — grow to fill the tile when there are few cards, but NEVER shrink below the
      card grid's own height, or the grey background stops partway down and the cards render
@@ -375,6 +386,7 @@
       this.state = {
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
         roleFilterApplied: null,   // set from queryResponse each update; null = Looker didn't say
+        orgHeadcount: null,        // whole-org employee count from the model; null = not selected
         selectedPairs: [], chartRole: null, openMenuPk: null,
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
         // simAuto: the complement is still system-picked — any manual add/remove clears it so the
@@ -525,7 +537,7 @@
       ["user_id","name","job_title","current_company","picture","country","target_role_id","target_role_name",
        "role_fit","leadership_score","agility_score","cultural_fit_score","technical_score",
        "subcompetencies_json","skills_json","bench_strength","manager_name","performance_year","performance_rating",
-       "directorate_name","division_name","department_name","job_level"]
+       "directorate_name","division_name","department_name","job_level","org_headcount"]
       .concat(PERSONAL_KEYS)
       .forEach(function (k) {
         var f = all.find(function (x) { return x.name.split(".").pop() === k || x.name === k; });
@@ -550,22 +562,47 @@
       // by level rather than silently excluded, and the sim panel says so.
       this.state.levelInQuery = !!map.job_level;
 
+      // Whole-organisation headcount, carried on every row as a constant by the model (a scalar
+      // subquery over the client's people, so the target-role filter cannot shrink it). The rows
+      // themselves only cover people who have a completed assessment against some target role —
+      // a small fraction of the workforce — so the idle count line reports this instead of the
+      // number of distinct users in the result set. null when the tile did not select the field,
+      // in which case the count line falls back to the assessed population as before.
+      this.state.orgHeadcount = null;
+      if (map.org_headcount) {
+        for (var hi = 0; hi < (data || []).length; hi++) {
+          var hv = num(val(data[hi], "org_headcount"));
+          if (hv != null && isFinite(hv) && hv > 0) { this.state.orgHeadcount = Math.round(hv); break; }
+        }
+      }
+
       var emps = [], roleIds = {};
       (data || []).forEach(function (row) {
         var roleId = String(val(row, "target_role_id"));
-        if (roleId === "null" || roleId === "undefined") return;
-        roleIds[roleId] = true;
+        // No target_role_id = someone the model returned who has never been assessed against any
+        // role. The model only emits these when the tile is unfiltered, and they are the whole
+        // point of the idle view: the workforce, not the assessed slice of it. They are kept as
+        // real rows under a reserved roleId so the chart can plot them, but NOT registered in
+        // roleIds — that feeds rolesInView, the role dropdown and the chart-role default, and
+        // "no role" is not a role anyone can pick.
+        var unscored = (roleId === "null" || roleId === "undefined");
+        if (unscored) roleId = NO_ROLE; else roleIds[roleId] = true;
         var uid = String(val(row, "user_id"));
         emps.push({
           userId: uid,
           roleId: roleId,
+          unscored: unscored,
           pk: uid + "::" + roleId,
           angle: (hashStr(uid + "|" + roleId) % 10000) / 10000 * Math.PI * 2,
+          // Rim position for the idle view, hashed on the person alone. `angle` is per (person,
+          // role), so a person assessed against several roles would jump around the rim
+          // depending on which of their rows won the idle dedupe.
+          angleUser: (hashStr(uid) % 10000) / 10000 * Math.PI * 2,
           name: val(row, "name") || "Unknown",
           jobTitle: val(row, "job_title") || "",
           company: val(row, "current_company") || "",
           picture: val(row, "picture") || "",
-          roleName: val(row, "target_role_name") || ("Role " + roleId),
+          roleName: unscored ? "" : (val(row, "target_role_name") || ("Role " + roleId)),
           managerName: val(row, "manager_name") || "",
           // org placement of the person's CURRENT role — scopes the complement pool.
           // orgUnit() collapses NULL / "" / "   " to "" so a missing level is treated as
@@ -622,11 +659,21 @@
       emps.forEach(function (e) {
         st.byPair[e.pk] = e;
         us[e.userId] = true;
+        // Unscored rows are people, so they count toward userIds — but they carry no role, and
+        // letting NO_ROLE into roleNames/rolesByUser would put a nameless entry in rolesInView
+        // and offer "compare against no role" in a card's ＋role menu.
+        if (e.unscored) return;
         roleNames[e.roleId] = e.roleName;
         var arr = st.rolesByUser[e.userId] || (st.rolesByUser[e.userId] = []);
         if (!arr.some(function (r) { return r.id === e.roleId; })) arr.push({ id: e.roleId, name: e.roleName });
       });
       st.userIds = Object.keys(us);
+      // Distinct people with at least one assessment, which is what the chart can actually plot
+      // a fit for. Once the model drives from the whole workforce, userIds is the headcount and
+      // this is the scored minority within it; before that change they are the same number.
+      var seenScored = {};
+      emps.forEach(function (e) { if (!e.unscored) seenScored[e.userId] = true; });
+      st.assessedCount = Object.keys(seenScored).length;
       st.rolesInView = Object.keys(roleNames)
         .map(function (id) { return { id: id, name: roleNames[id] }; })
         .sort(function (a, b) { return a.name.localeCompare(b.name); });
@@ -641,9 +688,12 @@
         st.openMenuPk = null;
         st.zoom = 1; st.panX = 0; st.panY = 0;
         st.animateIn = true;   // new population -> nodes glide in (consumed by _draw)
-        // default chart role = the one the most employees are assessed against
+        // default chart role = the one the most employees are assessed against. Unscored rows are
+        // excluded deliberately: they all share the reserved NO_ROLE id, and unfiltered they
+        // outnumber any single real role several times over — counting them would elect "no role"
+        // as the chart role and empty out simulate mode, whose every pool keys off chartRole.
         var counts = {};
-        emps.forEach(function (e) { counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
+        emps.forEach(function (e) { if (!e.unscored) counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
         st.chartRole = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0] || null;
 
         var cfgMax = Number(this._config.default_role_fit_max);
@@ -657,7 +707,7 @@
         // keep only still-present selections and a valid chart role
         st.selectedPairs = st.selectedPairs.filter(function (pk) { return st.byPair[pk]; });
         if (!roleNames[st.chartRole]) {
-          var c2 = {}; emps.forEach(function (e) { c2[e.roleId] = (c2[e.roleId] || 0) + 1; });
+          var c2 = {}; emps.forEach(function (e) { if (!e.unscored) c2[e.roleId] = (c2[e.roleId] || 0) + 1; });
           st.chartRole = Object.keys(c2).sort(function (a, b) { return c2[b] - c2[a]; })[0] || null;
         }
       }
@@ -738,30 +788,55 @@
       // no target-role filter you see everyone, and selecting role(s) subsets the chart.
       // Simulate mode scopes to a single role's population (candidate-as-bar).
       var sim = st.mode === "simulate";
+      var multi = !sim && st.rolesInView.length > 1;
+      // Idle state — no target role is selected, so the radius cannot mean "fit to the target
+      // role" and every node parks on the 0% rim in neutral grey rather than plotting a blob of
+      // unrelated fits. Two independent signals, because each covers the other's blind spot:
+      //   - Unscored rows in the data. A role filter would have dropped them in the model, so
+      //     their presence is proof the query is unfiltered. Firmer than anything Looker reports,
+      //     and it holds even for a client with only one target role defined — which is why this
+      //     signal deliberately does NOT sit behind the `multi` gate.
+      //   - A positive "no role filter" from applied_filters, for tiles on the old model where no
+      //     unscored row can ever arrive. Gated on `multi`: a deliberate multi-role selection is
+      //     NOT idle (the roles in view are the ones the user asked for, so each node plots its
+      //     own fit), and when Looker reports nothing (null) the fit is plotted, since a
+      //     mislabelled-but-readable chart beats a rim of dots either way.
+      // Simulate mode always scopes itself to one role, so it never idles.
+      var hasUnscored = st.assessedCount < st.userIds.length;
+      var idle = !sim && (hasUnscored || (multi && st.roleFilterApplied === false));
       var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
                    .sort(function (a, b) { return b.roleFit - a.roleFit; });
-      // Idle state — the query was never scoped to target roles, so every (employee × role) row
-      // in the model arrives and the radius cannot mean "fit to the target role". Park every node
-      // on the 0% rim in the Low colour rather than plot a blob of unrelated fits.
-      // A deliberate multi-role selection is NOT idle: the roles in view are the ones the user
-      // asked for, so each node plots its own fit and the count line names that basis. Only a
-      // positive "no role filter" from Looker idles the chart — when it reports nothing (null) the
-      // fit is plotted, since a mislabelled-but-readable chart beats a rim of dots either way.
-      // Simulate mode always scopes itself to one role, so it never idles.
-      var multi = !sim && st.rolesInView.length > 1;
-      var idle = multi && st.roleFilterApplied === false;
+      // Idle plots the WORKFORCE, so one dot per person — not one per assessment row. Without
+      // this someone assessed against four roles is four dots on the rim while the count line
+      // says "561 employees", and the two never agree.
+      if (idle) {
+        var seenP = {};
+        list = list.filter(function (e) { return seenP[e.userId] ? false : (seenP[e.userId] = true); });
+      }
+      // Not reached in idle: bubbles are inert there and the count line is the headcount alone.
       var tail = st.selectedPairs.length ? " · " + st.selectedPairs.length + " selected" : "";
-      var people = st.userIds.length + (st.userIds.length === 1 ? " employee" : " employees");
-      var spread = list.length + " assessments · " + people + " · " + st.rolesInView.length + " roles · ";
+      var ppl = function (n) { return n + (n === 1 ? " employee" : " employees"); };
+      // Headcount vs assessed population. Two ways the whole workforce can reach us, and the
+      // count line has to be right under both: the model drives from every employee (unscored
+      // rows arrive, so userIds IS the headcount), or it still drives from the assessments and
+      // only carries the total as org_headcount. Prefer whichever is larger — org_headcount is
+      // only bigger than the rows when the driver flip has not been deployed yet.
+      var assessed = st.assessedCount;
+      var head = (st.orgHeadcount != null && st.orgHeadcount > st.userIds.length) ? st.orgHeadcount : st.userIds.length;
+      var people = ppl(head);
+      var spread = list.length + " assessments · " + ppl(assessed) + " · " + st.rolesInView.length + " roles · ";
       if (sim) {
         var cc = this._simComplementEmps().length;
         this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
       } else if (!list.length) {
         this.$.count.textContent = "No assessments in view";
       } else if (idle) {
-        // Headcount, not the assessment count: with no filter each person appears once per role,
-        // so "500 assessments" describes the query rather than the workforce being looked at.
-        this.$.count.textContent = people + " · no target roles selected — filter to a target role" + tail;
+        // Headcount alone, and nothing else. NOT the assessment count: with no filter a person
+        // appears once per role, so "500 assessments" would describe the query rather than the
+        // workforce. Everything that used to trail this line has a better home now — the call to
+        // action is the panel message under the chart, and "nothing here is scored" is the
+        // legend's single Not-scored chip. Repeating either here was clutter.
+        this.$.count.textContent = people;
       } else if (multi) {
         this.$.count.textContent = spread + "fit is against each row's own target role" + tail;
       } else {
@@ -796,7 +871,7 @@
 
       list.forEach(function (emp, i) {
         var m = idle ? 0 : Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
-        var ang = emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
+        var ang = idle ? emp.angleUser : emp.angle, bx = cx + r * Math.cos(ang), by = cy + r * Math.sin(ang);
         if (r < 4) { bx = cx; by = cy; }
         var sim = st.mode === "simulate";
         var isFocus = sim && emp.pk === st.simFocus;
@@ -811,20 +886,30 @@
         else if (isComp) cls += " comp";
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
         if (!inPool) cls += " out";
+        // Idle: nothing on the rim opens a card. There is no target role, so there is no fit to
+        // show and the card is a fit profile — and the unscored people plotted here have no
+        // competencies or skills to fall back on either. Dropping the affordance entirely beats
+        // opening a card that has to apologise for being empty.
+        if (idle) cls += " inert";
         var hit = !st.search || emp.name.toLowerCase().indexOf(st.search) >= 0;
         var g = svgEl("g", { class: cls });
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
           "fill-opacity": (hit && inPool) ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
         var ti = svgEl("title", {});
-        ti.textContent = emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" +
-          // say WHICH rule shut a bubble out — org unit and seniority look identical when greyed
-          (sim && !inPool
-            ? (tooJunior
-                ? " · " + self._levelsBelow(emp) + " levels below the successor"
-                : " · outside " + self._scopeLabel(st.simScope).toLowerCase())
-            : "");
+        // Idle nodes sit on the rim because nothing has been scored, not because they scored 0 —
+        // quoting a fit here would attach a verdict to a role the user never picked.
+        ti.textContent = idle
+          ? emp.name + (emp.jobTitle ? " — " + emp.jobTitle : "") +
+            (emp.unscored ? " · not assessed" : " · not scored against a selected role")
+          : emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" +
+            // say WHICH rule shut a bubble out — org unit and seniority look identical when greyed
+            (sim && !inPool
+              ? (tooJunior
+                  ? " · " + self._levelsBelow(emp) + " levels below the successor"
+                  : " · outside " + self._scopeLabel(st.simScope).toLowerCase())
+              : "");
         g.appendChild(ti);
-        g.addEventListener("click", function () {
+        if (!idle) g.addEventListener("click", function () {
           if (st.dragMoved) return;
           if (st.mode === "simulate") { if (!inPool) return; self._toggleComplement(emp.pk); self._draw(); }
           else { self._togglePair(emp.pk); self._draw(); }
@@ -850,11 +935,18 @@
         st.chartRoot.getBoundingClientRect();
         flying.forEach(function (g) { g.style.transform = "translate(0px,0px)"; g.style.opacity = ""; });
       }
-      if (st.mode === "simulate") this._renderSim(); else this._renderPanels();
+      if (st.mode === "simulate") this._renderSim(); else this._renderPanels(idle);
     },
 
-    _renderPanels: function () {
+    _renderPanels: function (idle) {
       var self = this, st = this.state, panel = this.$.panel;
+      // Idle: the bubbles are inert, so the panel must not invite a click that does nothing —
+      // and it must not keep showing cards selected before the filter was cleared.
+      if (idle) {
+        this.$.wrap.classList.remove("has-cards");
+        panel.innerHTML = '<div class="nx-empty"><p>Select a target role to open employee profiles.</p></div>';
+        return;
+      }
       this.$.wrap.classList.toggle("has-cards", st.selectedPairs.length > 0);
       if (!st.selectedPairs.length) {
         panel.innerHTML = '<div class="nx-empty"><p>Click employee bubbles to view and compare profiles. Use ＋ role on a card to compare one person across roles.</p></div>';
