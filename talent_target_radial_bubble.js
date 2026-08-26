@@ -133,11 +133,6 @@
   .nx-legend b{color:var(--ink); font-weight:700}
   .nx-chip{display:inline-flex; align-items:center; gap:6px}
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
-  /* Pool key (simulate only). Neutral grey at the chart's own two opacities, so the swatches read
-     as "brightness means eligibility" rather than adding a fifth colour to the key. */
-  .nx-leg-sep{margin-left:4px}
-  .nx-leg-in{background:#6b7684; opacity:.9}
-  .nx-leg-out{background:#6b7684; opacity:.12}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
@@ -247,8 +242,6 @@
   .nx-wrap.simmode .nx-simfield{display:flex}
   .nx-bubble.focus circle{stroke:var(--accent); stroke-width:2.5}
   .nx-bubble.comp circle{stroke:var(--pos); stroke-width:2.5}
-  .nx-bubble.out{cursor:default}                 /* outside the complement pool — not pickable */
-  .nx-bubble.out:hover circle{stroke:none; stroke-width:0}
   .nx-wrap.simmode .nx-panel{display:block; padding:0}
   .cx-shell{padding:14px 16px 22px}
   .cx-cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
@@ -1007,14 +1000,9 @@
         '<span class="nx-chip"><i style="background:' + esc(c.color_high || "#2fbf71") + '"></i>High</span>' +
         '<span class="nx-chip"><i style="background:' + esc(c.color_medium || "#f5a623") + '"></i>Medium</span>' +
         '<span class="nx-chip"><i style="background:' + esc(c.color_low || "#e8503a") + '"></i>Low</span>';
-      // Simulate draws a SECOND encoding on top of the colour bands — opacity marks who is
-      // eligible to be a complement — and nothing on screen said so. Two levels of brightness
-      // with no key reads as some bubbles being arbitrarily highlighted.
-      this.$.legend.innerHTML = bands + (sim
-        ? '<b class="nx-leg-sep">Pool</b>' +
-          '<span class="nx-chip"><i class="nx-leg-in"></i>Eligible</span>' +
-          '<span class="nx-chip"><i class="nx-leg-out"></i>Not eligible</span>'
-        : "");
+      // No pool key any more: simulate draws the pool and nothing else, so there is no second
+      // brightness level left to explain.
+      this.$.legend.innerHTML = bands;
     },
 
     // ---- chart --------------------------------------------------------------
@@ -1057,6 +1045,24 @@
         var pick = {}; st.searchIds.forEach(function (u) { pick[u] = 1; });
         list = list.filter(function (e) { return !!pick[e.userId]; });
       }
+      // Simulate shows the POOL ONLY — the successor, whoever is already a complement, and the
+      // candidates actually eligible to become one. Everyone else is removed, the same way a
+      // search removes non-matches in compare mode, rather than faded to 12% opacity.
+      //
+      // Fading was not merely untidy, it was actively misleading: a faded dot still owns its
+      // pixel and still answers the mouse. An ineligible person sitting on the same spot as the
+      // chosen complement took the hover and reported themselves — which is what made the chart
+      // look like it had picked someone the panel disagreed with. A node that is gone cannot
+      // shadow one that matters.
+      //
+      // Complements chosen before the pool was narrowed are kept deliberately: they are part of
+      // the team being modelled, so they must stay visible and removable.
+      if (sim) {
+        list = list.filter(function (e) {
+          return e.pk === st.simFocus || !!st.simComplements[e.pk] ||
+                 (self._inScope(e, st.simScope) && self._levelOk(e));
+        });
+      }
       // Idle plots the WORKFORCE, so one dot per person — not one per assessment row. Without
       // this someone assessed against four roles is four dots on the rim while the count line
       // says "561 employees", and the two never agree.
@@ -1078,7 +1084,12 @@
       var spread = list.length + " assessments · " + ppl(assessed) + " · " + st.rolesInView.length + " roles · ";
       if (sim) {
         var cc = this._simComplementEmps().length;
-        this.$.count.textContent = list.length + " employees · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
+        // list is the pool now, not the workforce — "104 employees" beside 5 dots was the old
+        // reading and would be flatly wrong. Report the candidates on screen, excluding the
+        // successor, which is what the dots actually are.
+        var poolN = Math.max(0, list.length - (st.simFocus && st.byPair[st.simFocus] ? 1 : 0));
+        this.$.count.textContent = poolN + " candidate" + (poolN === 1 ? "" : "s") +
+          " in pool · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
       } else if (!list.length) {
         // "No assessments in view" would be a lie when the chart is empty because the search
         // narrowed it to people who have none — that reads as a broken tile rather than a filter.
@@ -1140,36 +1151,28 @@
         var sim = st.mode === "simulate";
         var isFocus = sim && emp.pk === st.simFocus;
         var isComp = sim && !isFocus && !!st.simComplements[emp.pk];
-        // Simulate mode: only the current complement pool is pickable — in the right org unit
-        // AND within reach on seniority. Already-chosen complements stay lit even if the pool was
-        // narrowed after they were added.
-        var tooJunior = sim && !self._levelOk(emp);
-        var inPool = !sim || isFocus || isComp || (self._inScope(emp, st.simScope) && !tooJunior);
+        // No out-of-pool state to draw any more: in simulate mode `list` was already narrowed to
+        // the pool above, so everything reaching this loop is pickable.
         var cls = "nx-bubble";
         if (isFocus) cls += " focus";
         else if (isComp) cls += " comp";
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
-        if (!inPool) cls += " out";
         // Idle: nothing on the rim opens a card. There is no target role, so there is no fit to
         // show and the card is a fit profile — and the unscored people plotted here have no
         // competencies or skills to fall back on either. Dropping the affordance entirely beats
         // opening a card that has to apologise for being empty.
         if (idle) cls += " inert";
         var g = svgEl("g", { class: cls });
-        // Fading is now reserved for "outside the complement pool" — search no longer dims
-        // anything, because anything it excluded is not in `list` at all.
+        // One opacity for everything drawn. Nothing on this chart is a second-class node now:
+        // whatever is excluded — by search in compare, by the pool in simulate — is simply absent.
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
-          "fill-opacity": inPool ? 0.9 : 0.12, stroke: "#fff", "stroke-width": 0.5 }));
-        // In simulate mode a bubble is in one of four states, and until now only the EXCLUDED one
-        // said so on hover. That left every bright dot unexplained: the pool is lit at full
-        // opacity whether or not anyone has picked it, so an eligible candidate looked exactly
-        // like a chosen complement and neither announced itself. Name all four.
+          "fill-opacity": 0.9, stroke: "#fff", "stroke-width": 0.5 }));
+        // Three states left in simulate, all of them on screen for a reason. The "not eligible"
+        // wordings are gone with the nodes they described.
         var simTag = !sim ? ""
           : isFocus ? " · successor"
           : isComp ? " · complement — click to remove"
-          : inPool ? " · in the complement pool — click to add"
-          : tooJunior ? " · not eligible — " + self._levelsBelow(emp) + " levels below the successor"
-          : " · not eligible — outside " + self._scopeLabel(st.simScope).toLowerCase();
+          : " · in the complement pool — click to add";
         var ti = svgEl("title", {});
         // Idle nodes sit on the rim because nothing has been scored, not because they scored 0 —
         // quoting a fit here would attach a verdict to a role the user never picked.
@@ -1180,7 +1183,7 @@
         g.appendChild(ti);
         if (!idle) g.addEventListener("click", function () {
           if (st.dragMoved) return;
-          if (st.mode === "simulate") { if (!inPool) return; self._toggleComplement(emp.pk); self._draw(); }
+          if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
           else { self._togglePair(emp.pk); self._draw(); }
         });
         if (flyIn) {
