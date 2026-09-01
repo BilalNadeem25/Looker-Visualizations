@@ -32,6 +32,13 @@
           display: 'color',
           section: 'Colors'
         },
+        max_level_gap: {
+          label: 'Max job-level gap for an automatic swap',
+          default: 1,
+          type: 'number',
+          section: 'Optimizer',
+          order: 1
+        },
         color_mode: {
           label: 'Color nodes by',
           default: 'org_health',
@@ -370,6 +377,9 @@
           talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
           division_name:              pick(row, 'division_name') ?? null,
+          // Seniority grade of this role (talent_roles.level). Only the ABSOLUTE gap
+          // between two roles is used, so the client's numbering direction is irrelevant.
+          job_level:                  toNum(pick(row, 'job_level')),
           client_name:                pick(row, 'client_name') ?? '—',
           bench_strength:             normBench(pick(row, 'bench_strength')),
           bench_risk:                 normBenchRisk(pick(row, 'bench_risk')),
@@ -416,7 +426,7 @@
         if (roots.length > 1) {
           nodes.unshift({
             talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
-            employee_name: '', talent_role_name: '', parent_talent_role_name: null, division_name: null,
+            employee_name: '', talent_role_name: '', parent_talent_role_name: null, division_name: null, job_level: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
             is_mission_critical_position: false, is_talent: false, role_fit_score: null,
             successor_role_fit_scores: [], candidate_role_fit_scores: [], employee_role_fits: []
@@ -573,6 +583,7 @@
                 const skipped = [];
                 if (r.tally.oneway)   skipped.push(`${r.tally.oneway} scored one way only`);
                 if (r.tally.division) skipped.push(`${r.tally.division} cross-division`);
+                if (r.tally.level)    skipped.push(`${r.tally.level} more than ${r.maxGap} job level${r.maxGap === 1 ? '' : 's'} apart`);
                 if (r.tally.noMatrix) skipped.push(`${r.tally.noMatrix} never assessed for another role`);
                 if (r.tally.unscored) skipped.push(`${r.tally.unscored} no fit in current role`);
                 return `
@@ -586,6 +597,7 @@
                     ${r.startedFrom ? `<div class="to-opt-note">Built on the ${r.startedFrom} placement${r.startedFrom === 1 ? '' : 's'} already in the plan.</div>` : ''}
                     ${!r.moves ? `<div class="to-opt-note">No legal swap improves the org from here${r.tally.pairs ? ` — ${r.tally.pairs} pair${r.tally.pairs === 1 ? '' : 's'} examined` : ''}.</div>` : ''}
                     ${skipped.length ? `<div class="to-opt-note">Rejected: ${skipped.join(' · ')}.${r.divOnly && r.tally.division ? ' Untick below to allow cross-division moves.' : ''}</div>` : ''}
+                    ${r.unlevelled ? `<div class="to-opt-note" style="color:#e67e22;">${r.unlevelled} of these swap${r.unlevelled === 1 ? ' was' : 's were'} not seniority-checked — no job level on one of the roles. Add <b>job_level</b> to the tile query.</div>` : ''}
                     ${r.capped ? `<div class="to-opt-note" style="color:#e67e22;">Stopped at the safety cap — run it again to continue.</div>` : ''}
                   </div>` ;
               })()}
@@ -1266,7 +1278,11 @@
         //      against something real rather than against a blank;
         //   4. the two roles share a division — unless the user unticks the constraint.
         //      A role with no division recorded is treated as unconstrained, matching how
-        //      the manual explorer already behaves.
+        //      the manual explorer already behaves;
+        //   5. the two roles sit within `max_level_gap` job levels of each other. Role fit
+        //      alone will happily pair a Backend Developer with the CTO — the scores say
+        //      nothing about seniority, so without this guard the plan proposes moves no
+        //      one can act on.
         // Each unordered pair is judged once per pass; the evaluation is symmetric, so
         // looking at it from the other side would only repeat the same verdict.
         //
@@ -1290,6 +1306,31 @@
         // the denominator computeOrgFitPair() holds fixed. Seats outside it can still be
         // swapped on band grounds; they just carry no weight in the fit term.
         const seatInAvg   = seatId => { const dd = seatDataOf(seatId); return !!dd && numOr(dd.role_fit_score) != null; };
+
+        // ── Seniority guard ────────────────────────────────────────
+        // How many job levels apart two roles sit, as an ABSOLUTE gap: a swap moves each
+        // occupant into the other's seat, so it is unrealistic in both directions and the
+        // client's numbering convention (1 = top, or the reverse) cancels out. That is why
+        // this needs no equivalent of Talent Target's `level_order` switch.
+        // null = not answerable, because one of the roles carries no level.
+        const maxLevelGap = () => {
+          const n = Number(config.max_level_gap);
+          return isFinite(n) && n >= 0 ? n : 1;
+        };
+        // NOTE: deliberately NOT numOr() — that returns 0 for null (Number(null) === 0),
+        // which would read a role with no level recorded as the most senior grade there is
+        // and reject its swaps as huge seniority gaps. A missing level must stay null so
+        // the guard reports itself as unevaluable instead of silently inventing an answer.
+        const levelOf = seatId => {
+          const dd = seatDataOf(seatId);
+          if (!dd || dd.job_level == null || dd.job_level === '') return null;
+          const n = Number(dd.job_level);
+          return isFinite(n) ? n : null;
+        };
+        const levelGapOf = (seatA, seatB) => {
+          const la = levelOf(seatA), lb = levelOf(seatB);
+          return (la == null || lb == null) ? null : Math.abs(la - lb);
+        };
 
         // Fit + band a person (identified by their HOME role) would have in `seatId`,
         // by the same rule the metric uses: at home, the node's own scores; away, the
@@ -1320,6 +1361,25 @@
             const dA = divisionOfRole(a), dB = divisionOfRole(b);
             if (dA && dB && dA !== dB) return { seatA: a, seatB: b, ok: false, reason: 'division' };
           }
+          // Seniority — measured on each person's NET move, from the role they actually
+          // hold in the org today (their home role) to where this swap would land them,
+          // NOT on the two seats being exchanged. Passes compose into cycles, so a chain
+          // of individually-legal one-level swaps can otherwise walk someone several
+          // grades away from home, and the exported plan asks the business to execute
+          // that end-to-end move, not the intermediate steps. When nobody has moved yet
+          // home == seat and this reduces to the plain seat-to-seat gap.
+          // An unknown level on either side does NOT reject the pair — the guard simply
+          // cannot be evaluated there, and refusing every swap because the client has not
+          // populated talent_roles.level would be a worse failure than not applying it.
+          // The summary reports how many applied swaps went unchecked.
+          const cap  = maxLevelGap();
+          const gapA = levelGapOf(pA, b);     // person from seat A → seat B, versus their home
+          const gapB = levelGapOf(pB, a);     // person from seat B → seat A, versus their home
+          if ((gapA != null && gapA > cap) || (gapB != null && gapB > cap)) {
+            return { seatA: a, seatB: b, ok: false, reason: 'level' };
+          }
+          // null only when a level is missing, which is what `unlevelled` reports.
+          const gap = (gapA == null || gapB == null) ? null : Math.max(gapA, gapB);
           // Reciprocity first — it is the cheapest rejection and the most common one.
           const aNew = projectedFit(pA, b), bNew = projectedFit(pB, a);
           if (!aNew || !bNew) return { seatA: a, seatB: b, ok: false, reason: 'oneway' };
@@ -1334,7 +1394,7 @@
           const fitDelta = (bNew.fit - aNow.fit) * wA + (aNew.fit - bNow.fit) * wB;
           const ok = greenDelta > 0 || (greenDelta === 0 && fitDelta > OPT_EPS);
           return {
-            seatA: a, seatB: b, greenDelta, fitDelta, ok,
+            seatA: a, seatB: b, greenDelta, fitDelta, levelGap: gap, ok,
             reason: ok ? null : (greenDelta < 0 ? 'losesgreen' : 'nogain')
           };
         };
@@ -1370,8 +1430,8 @@
         const runAutoOptimize = () => {
           const before = computeOrgFitPair();
           const startedFrom = realNodes().filter(n => n._placedUser).length;
-          const tally = { pairs: 0, noMatrix: 0, division: 0, oneway: 0, unscored: 0, nogain: 0, losesgreen: 0 };
-          let rounds = 0, moves = 0;
+          const tally = { pairs: 0, noMatrix: 0, division: 0, level: 0, oneway: 0, unscored: 0, nogain: 0, losesgreen: 0 };
+          let rounds = 0, moves = 0, unlevelled = 0;
 
           while (rounds < OPT_MAX_ROUNDS && moves < OPT_MAX_MOVES) {
             // Only the first pass reports rejections — later passes see a shifted board
@@ -1395,6 +1455,7 @@
               if (used.has(c.seatA) || used.has(c.seatB)) continue;
               used.add(c.seatA); used.add(c.seatB);
               swapSeats(c.seatA, c.seatB);
+              if (c.levelGap == null) unlevelled++;   // taken without a seniority check
               applied++; moves++;
             }
             rounds++;
@@ -1403,7 +1464,7 @@
 
           const after = computeOrgFitPair();
           self._optReport = {
-            moves, rounds, tally, startedFrom,
+            moves, rounds, tally, startedFrom, unlevelled, maxGap: maxLevelGap(),
             fitBefore:   before.simAvg,   fitAfter:   after.simAvg,
             greenBefore: before.simGreen, greenAfter: after.simGreen,
             pctBefore:   before.simPct,   pctAfter:   after.simPct,
