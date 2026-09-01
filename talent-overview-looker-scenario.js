@@ -51,7 +51,7 @@
 
         const style = document.createElement('style');
         style.textContent = `
-          .to-toggle { position:absolute; top:10px; left:10px; display:flex; gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); z-index:10; align-items:center; }
+          .to-toggle { position:absolute; top:10px; left:10px; display:flex; flex-wrap:wrap; max-width:calc(100% - 20px); gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); z-index:10; align-items:center; }
           .to-toggle span { font-size:11px; color:#888; }
           .to-btn { font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
           .to-btn.active { background:#3498db; color:#fff; border-color:#3498db; }
@@ -74,7 +74,7 @@
           .to-tt-dot { width:8px; height:8px; border-radius:50%; }
           .to-score-wrap { background:rgba(255,255,255,0.15); border-radius:3px; height:5px; overflow:hidden; width:70px; }
           .to-score-bar { height:100%; border-radius:3px; }
-          .to-summary { position:absolute; bottom:10px; right:10px; background:rgba(255,255,255,0.95); border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); padding:10px 14px; font-size:11px; color:#444; min-width:200px; z-index:10; }
+          .to-summary { position:absolute; bottom:10px; right:10px; background:rgba(255,255,255,0.95); border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); padding:10px 14px; font-size:11px; color:#444; min-width:200px; max-height:calc(100% - 20px); overflow-y:auto; z-index:10; }
           .to-summary-title { font-weight:700; font-size:11px; color:#222; margin-bottom:6px; padding-bottom:5px; border-bottom:1px solid #eee; }
           .to-summary-row { display:flex; justify-content:space-between; padding:2px 0; gap:16px; }
           .to-summary-label { color:#888; }
@@ -94,6 +94,11 @@
           .to-btn:disabled { cursor:default; opacity:0.45; }
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
+          .to-btn.auto { border-color:#8e44ad; color:#8e44ad; font-weight:600; }
+          .to-btn.auto:hover:not(:disabled) { background:#f6eefb; }
+          .to-opt-block { margin-top:6px; padding-top:5px; border-top:1px solid #eee; }
+          .to-opt-title { font-weight:600; color:#8e44ad; margin-bottom:3px; }
+          .to-opt-note { font-size:10px; color:#999; line-height:1.35; margin-top:3px; }
           .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-tabs { display:flex; gap:4px; margin-top:8px; }
@@ -214,6 +219,7 @@
           <span style="width:1px;height:16px;background:#e0e0e0;margin:0 2px;"></span>
           <button class="to-btn" id="to-btn-scenario" title="Simulate bench-risk changes">Simulate</button>
           <button class="to-btn" id="to-btn-fit" title="Simulate better role placements to raise role fit">Optimize Fit</button>
+          <button class="to-btn auto" id="to-btn-auto" title="Find and apply the best set of role swaps automatically" style="display:none;">⚡ Auto-Optimize</button>
           <button class="to-btn" id="to-btn-reset" style="display:none;">↺ Reset</button>
         `;
         element.appendChild(toggle);
@@ -296,6 +302,8 @@
         this._scenario     = new Map();
         // seat roleId -> home roleId of the person now occupying it (non-identity only)
         this._fitAssign    = new Map();
+        // Result of the last Auto-Optimize run (null once the plan is edited by hand).
+        this._optReport    = null;
         this._gapIdx       = 0;
         this._svg          = null;
         this._nodeG        = null;
@@ -312,6 +320,10 @@
       updateAsync(data, element, config, queryResponse, details, done) {
         this._chart.querySelectorAll('svg').forEach(el => el.remove());
         this._fitRerender = null;   // drop the closure bound to the previous render's tree
+        // Identity for THIS render. Deferred work (the auto-optimizer runs a tick after
+        // its click so the button can repaint) checks it before touching the tree, so a
+        // resize or cross-filter landing in that gap can't drive the old, detached SVG.
+        const renderToken = (this._renderToken = {});
 
         const fields     = [...queryResponse.fields.dimension_like, ...queryResponse.fields.measure_like];
         const fieldNames = fields.map(f => f.name);
@@ -548,6 +560,35 @@
                 }).join('')}
               </div>
               <div class="to-summary-section"><div class="to-summary-dot-row"><span class="to-summary-label">Placements</span><span class="to-summary-value">${placements}</span></div></div>
+              ${(() => {
+                const r = this._optReport;
+                if (!r) return '';
+                const gd = r.greenAfter - r.greenBefore;
+                const fd = (r.fitAfter != null && r.fitBefore != null) ? r.fitAfter - r.fitBefore : null;
+                const sign = v => (v > 0 ? '+' : '') + v;
+                const arrow = v => v > 0 ? 'good' : (v < 0 ? 'bad' : 'flat');
+                // Why the search came up short matters as much as what it found: an empty
+                // result is nearly always a data gap (one-way scores) or the division
+                // constraint, not "the org is already optimal".
+                const skipped = [];
+                if (r.tally.oneway)   skipped.push(`${r.tally.oneway} scored one way only`);
+                if (r.tally.division) skipped.push(`${r.tally.division} cross-division`);
+                if (r.tally.noMatrix) skipped.push(`${r.tally.noMatrix} never assessed for another role`);
+                if (r.tally.unscored) skipped.push(`${r.tally.unscored} no fit in current role`);
+                return `
+                  <div class="to-opt-block">
+                    <div class="to-opt-title">⚡ Auto-optimizer</div>
+                    <div class="to-summary-row"><span class="to-summary-label">Swaps applied</span><span class="to-summary-value">${r.moves}</span></div>
+                    ${r.moves ? `
+                      <div class="to-summary-row"><span class="to-summary-label">New green roles</span><span class="to-summary-value"><span class="to-arrow ${arrow(gd)}">${sign(gd)}</span></span></div>
+                      <div class="to-summary-row"><span class="to-summary-label">Fit gain (wtd)</span><span class="to-summary-value"><span class="to-arrow ${arrow(fd == null ? 0 : fd)}">${fd == null ? '—' : sign(+fd.toFixed(1))}</span></span></div>
+                      <div class="to-summary-row"><span class="to-summary-label">Passes</span><span class="to-summary-value">${r.rounds}</span></div>` : ''}
+                    ${r.startedFrom ? `<div class="to-opt-note">Built on the ${r.startedFrom} placement${r.startedFrom === 1 ? '' : 's'} already in the plan.</div>` : ''}
+                    ${!r.moves ? `<div class="to-opt-note">No legal swap improves the org from here${r.tally.pairs ? ` — ${r.tally.pairs} pair${r.tally.pairs === 1 ? '' : 's'} examined` : ''}.</div>` : ''}
+                    ${skipped.length ? `<div class="to-opt-note">Rejected: ${skipped.join(' · ')}.${r.divOnly && r.tally.division ? ' Untick below to allow cross-division moves.' : ''}</div>` : ''}
+                    ${r.capped ? `<div class="to-opt-note" style="color:#e67e22;">Stopped at the safety cap — run it again to continue.</div>` : ''}
+                  </div>` ;
+              })()}
               <label class="to-sum-chk"><input type="checkbox" id="to-sum-div" ${this._divFilter ? 'checked' : ''}> Same-division moves only</label>
               <button class="to-exp-open" id="to-fit-export" ${placements ? '' : 'disabled'}>📋 Export move plan${placements ? '' : ' (no moves yet)'}</button>
               <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to see who fits it best, then place someone to raise the average. Reset clears all placements.</div>`;
@@ -751,6 +792,7 @@
         // ══ Bench Risk simulation: interactions ═════════════════════
         const btnScenario = document.getElementById('to-btn-scenario');
         const btnFit      = document.getElementById('to-btn-fit');
+        const btnAuto     = document.getElementById('to-btn-auto');
         const btnReset    = document.getElementById('to-btn-reset');
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
@@ -1205,8 +1247,170 @@
             simAvg:  w ? sSum / w : null,
             basePct: total ? Math.round(100 * bGreen / total) : 0,
             simPct:  total ? Math.round(100 * sGreen / total) : 0,
+            baseGreen: bGreen, simGreen: sGreen,
             unscored, total
           };
+        };
+
+        // ══ Auto-Optimize: search the whole org for the best set of swaps ═══
+        // Hill-climbs the CURRENT assignment with pairwise swaps, so it composes with
+        // whatever the user has already placed by hand and can be re-run to push further.
+        //
+        // A swap of seat A and seat B is LEGAL when:
+        //   1. the person in A has been assessed for other roles at all (no fit matrix ⇒
+        //      they can never propose a move);
+        //   2. BOTH occupants are assessed for the other's seat. A one-way score (A fits
+        //      B's role but B was never scored for A's) is rejected — that isn't a swap,
+        //      it's a vacancy plus an unknown;
+        //   3. both also have a known fit where they sit now, so the delta is measured
+        //      against something real rather than against a blank;
+        //   4. the two roles share a division — unless the user unticks the constraint.
+        //      A role with no division recorded is treated as unconstrained, matching how
+        //      the manual explorer already behaves.
+        // Each unordered pair is judged once per pass; the evaluation is symmetric, so
+        // looking at it from the other side would only repeat the same verdict.
+        //
+        // RANKING is lexicographic — (net new green roles, MCP-weighted fit gain) — which
+        // is exactly "a swap that turns a role green passes even if fit doesn't improve",
+        // with mission-critical seats counting double. Two refinements on the brief:
+        //   * green is counted as a NET delta over both seats, so a swap that lights one
+        //     role up by putting the other's occupant out of the green band is not a win;
+        //   * the fit gain is weighted by the same rule computeOrgFitPair() uses, so the
+        //     optimizer moves the number the scoreboard actually shows.
+        // Every accepted swap strictly increases that lexicographic pair and both
+        // components are bounded, so the search cannot cycle — it stops when nothing
+        // improves, and the caps below are only a guard against pathological data.
+        const OPT_MAX_ROUNDS = 60;
+        const OPT_MAX_MOVES  = 500;
+        const OPT_EPS        = 1e-6;
+
+        const seatDataOf  = seatId => { const v = nodeById(seatId); return v ? v.data : null; };
+        const seatWeight  = seatId => { const dd = seatDataOf(seatId); return dd ? roleWeight(dd) : 1; };
+        // A seat only moves the org-fit average when its BASELINE fit is known — that is
+        // the denominator computeOrgFitPair() holds fixed. Seats outside it can still be
+        // swapped on band grounds; they just carry no weight in the fit term.
+        const seatInAvg   = seatId => { const dd = seatDataOf(seatId); return !!dd && numOr(dd.role_fit_score) != null; };
+
+        // Fit + band a person (identified by their HOME role) would have in `seatId`,
+        // by the same rule the metric uses: at home, the node's own scores; away, the
+        // entry from their fit matrix. null when that pairing was never assessed.
+        const projectedFit = (personHome, seatId) => {
+          const pv = nodeById(personHome);
+          if (!pv) return null;
+          if (String(personHome) === String(seatId)) {
+            const f = numOr(pv.data.role_fit_score);
+            return f == null ? null : { fit: f, band: pv.data.org_health_index || 'N/A' };
+          }
+          const e = fitOf(pv.data, seatId);
+          if (!e) return null;
+          const f = numOr(e.role_fit);
+          return f == null ? null : { fit: f, band: e.band || 'N/A' };
+        };
+
+        const greenOf = band => band === 'High' ? 1 : 0;
+
+        // Judge one candidate swap. null = not a real pair at all; otherwise
+        // { seatA, seatB, greenDelta, fitDelta, ok, reason }.
+        const scoreSwap = (seatA, seatB) => {
+          const a = String(seatA), b = String(seatB);
+          if (a === b) return null;
+          const pA = occupantOf(a), pB = occupantOf(b);
+          if (pA === pB) return null;
+          if (self._divFilter) {
+            const dA = divisionOfRole(a), dB = divisionOfRole(b);
+            if (dA && dB && dA !== dB) return { seatA: a, seatB: b, ok: false, reason: 'division' };
+          }
+          // Reciprocity first — it is the cheapest rejection and the most common one.
+          const aNew = projectedFit(pA, b), bNew = projectedFit(pB, a);
+          if (!aNew || !bNew) return { seatA: a, seatB: b, ok: false, reason: 'oneway' };
+          const aNow = projectedFit(pA, a), bNow = projectedFit(pB, b);
+          if (!aNow || !bNow) return { seatA: a, seatB: b, ok: false, reason: 'unscored' };
+
+          const greenDelta = (greenOf(aNew.band) + greenOf(bNew.band))
+                           - (greenOf(aNow.band) + greenOf(bNow.band));
+          const wA = seatInAvg(a) ? seatWeight(a) : 0;
+          const wB = seatInAvg(b) ? seatWeight(b) : 0;
+          // Seat A is taken over by person B and vice versa.
+          const fitDelta = (bNew.fit - aNow.fit) * wA + (aNew.fit - bNow.fit) * wB;
+          const ok = greenDelta > 0 || (greenDelta === 0 && fitDelta > OPT_EPS);
+          return {
+            seatA: a, seatB: b, greenDelta, fitDelta, ok,
+            reason: ok ? null : (greenDelta < 0 ? 'losesgreen' : 'nogain')
+          };
+        };
+
+        // Every legal, improving swap available from the CURRENT assignment. Driven by
+        // the fit matrices rather than by all N² seat pairs: a swap needs a score on both
+        // sides, so the matrix is the only place a candidate can come from.
+        const candidateSwaps = tally => {
+          const seen = new Set();
+          const out  = [];
+          realNodes().forEach(n => {
+            const a  = String(n.talent_role_id);
+            const pv = nodeById(occupantOf(a));
+            if (!pv) return;
+            const fits = Array.isArray(pv.data.employee_role_fits) ? pv.data.employee_role_fits : [];
+            if (!fits.length) { if (tally) tally.noMatrix++; return; }   // rule 1
+            fits.forEach(e => {
+              const b = String(e.talent_role_id);
+              if (b === a || !nodeById(b)) return;      // role not present in this view
+              const key = a < b ? a + '|' + b : b + '|' + a;
+              if (seen.has(key)) return;                // judge each pair once
+              seen.add(key);
+              const s = scoreSwap(a, b);
+              if (!s) return;
+              if (s.ok) out.push(s);
+              else if (tally) tally[s.reason] = (tally[s.reason] || 0) + 1;
+            });
+          });
+          if (tally) tally.pairs = seen.size;
+          return out;
+        };
+
+        const runAutoOptimize = () => {
+          const before = computeOrgFitPair();
+          const startedFrom = realNodes().filter(n => n._placedUser).length;
+          const tally = { pairs: 0, noMatrix: 0, division: 0, oneway: 0, unscored: 0, nogain: 0, losesgreen: 0 };
+          let rounds = 0, moves = 0;
+
+          while (rounds < OPT_MAX_ROUNDS && moves < OPT_MAX_MOVES) {
+            // Only the first pass reports rejections — later passes see a shifted board
+            // and their counts would double-count the same structural gaps.
+            const cands = candidateSwaps(rounds === 0 ? tally : null);
+            if (!cands.length) break;
+            cands.sort((x, y) =>
+              (y.greenDelta - x.greenDelta) ||
+              (y.fitDelta - x.fitDelta) ||
+              (x.seatA < y.seatA ? -1 : x.seatA > y.seatA ? 1 : 0) ||
+              (x.seatB < y.seatB ? -1 : x.seatB > y.seatB ? 1 : 0));
+            // Apply as many DISJOINT swaps as this pass offers. A swap's effect is local
+            // to its two seats, so non-overlapping swaps are independent and their deltas
+            // add exactly — taking only the single best one per pass would converge to the
+            // same place, just far more slowly on a large org. Overlapping swaps are left
+            // for the next pass, where they are re-scored against the new board.
+            const used = new Set();
+            let applied = 0;
+            for (let i = 0; i < cands.length && moves < OPT_MAX_MOVES; i++) {
+              const c = cands[i];
+              if (used.has(c.seatA) || used.has(c.seatB)) continue;
+              used.add(c.seatA); used.add(c.seatB);
+              swapSeats(c.seatA, c.seatB);
+              applied++; moves++;
+            }
+            rounds++;
+            if (!applied) break;
+          }
+
+          const after = computeOrgFitPair();
+          self._optReport = {
+            moves, rounds, tally, startedFrom,
+            fitBefore:   before.simAvg,   fitAfter:   after.simAvg,
+            greenBefore: before.simGreen, greenAfter: after.simGreen,
+            pctBefore:   before.simPct,   pctAfter:   after.simPct,
+            divOnly: !!self._divFilter,
+            capped: moves >= OPT_MAX_MOVES || rounds >= OPT_MAX_ROUNDS
+          };
+          return self._optReport;
         };
 
         // ══ Export the scenario as an actionable move plan ═══════════
@@ -1511,6 +1715,9 @@
           const esc       = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
 
           const applyAndRefresh = (flyTargets, rerender) => {
+            // A hand-made move invalidates the optimizer's report — its before/after
+            // numbers no longer describe the plan on screen.
+            self._optReport = null;
             paintFit();
             renderSummary();
             renderFitPanel();
@@ -1834,6 +2041,8 @@
         const applyActiveMode = () => {
           btnScenario.classList.toggle('scenario-on', self._scenarioMode);
           btnFit.classList.toggle('fit-on', self._fitMode);
+          btnAuto.style.display = self._fitMode ? '' : 'none';
+          btnAuto.disabled      = !self._fitMode;
           btnReset.style.display = (self._scenarioMode || self._fitMode) ? '' : 'none';
           btnOhi.disabled   = self._scenarioMode || self._fitMode;
           btnBench.disabled = self._scenarioMode || self._fitMode;
@@ -1891,9 +2100,36 @@
           applyActiveMode();
         };
 
+        // Run the whole optimization in one click. The search is synchronous, so the
+        // "working" label is painted first and the work deferred a tick — otherwise the
+        // button would still read "Auto-Optimize" while the thread is blocked.
+        btnAuto.onclick = () => {
+          if (!self._fitMode || btnAuto.disabled) return;
+          self._hideEmployeeCard();
+          self._action.classList.remove('visible');
+          const label = btnAuto.textContent;
+          btnAuto.textContent = 'Optimizing…';
+          btnAuto.disabled = true;
+          setTimeout(() => {
+            if (self._renderToken !== renderToken) return;   // superseded by a re-render
+            try {
+              runAutoOptimize();
+            } catch (e) {
+              console.error('[talent-org-chart] auto-optimize failed:', e);
+              self._optReport = null;
+            }
+            btnAuto.textContent = label;
+            btnAuto.disabled = false;
+            paintFit();
+            renderSummary();
+            renderFitPanel();
+          }, 20);
+        };
+
         btnReset.onclick = () => {
           if (self._fitMode) {
             clearAssignment();
+            self._optReport = null;
             self._action.classList.remove('visible');
             paintFit();
             renderSummary();
