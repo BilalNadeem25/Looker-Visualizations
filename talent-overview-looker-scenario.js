@@ -32,6 +32,27 @@
           display: 'color',
           section: 'Colors'
         },
+        auto_depth: {
+          label: 'Levels shown before a branch collapses',
+          default: 3,
+          type: 'number',
+          section: 'Scale',
+          order: 1
+        },
+        bundle_min: {
+          label: 'Bundle a manager\'s reports when they number at least',
+          default: 8,
+          type: 'number',
+          section: 'Scale',
+          order: 2
+        },
+        max_nodes: {
+          label: 'Most roles to draw at once (0 = fit to the tile)',
+          default: 0,
+          type: 'number',
+          section: 'Scale',
+          order: 3
+        },
         max_level_gap: {
           label: 'Max job-level gap for an automatic swap',
           default: 1,
@@ -62,6 +83,30 @@
           .to-toggle span { font-size:11px; color:#888; }
           .to-btn { font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
           .to-btn.active { background:#3498db; color:#fff; border-color:#3498db; }
+          /* ── Scale bar: breadcrumb trail + division filter (large orgs) ── */
+          .to-nav { position:absolute; top:46px; left:10px; display:flex; align-items:center; flex-wrap:wrap; gap:6px; background:rgba(255,255,255,0.95); padding:4px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); z-index:11; max-width:calc(100% - 20px); font-size:11px; }
+          .to-nav.hidden { display:none; }
+          .to-crumb { color:#3498db; cursor:pointer; white-space:nowrap; max-width:150px; overflow:hidden; text-overflow:ellipsis; }
+          .to-crumb:hover { text-decoration:underline; }
+          .to-crumb.here { color:#333; font-weight:600; cursor:default; }
+          .to-crumb.here:hover { text-decoration:none; }
+          .to-crumb-sep { color:#ccc; }
+          .to-nav-sel { font-size:11px; border:1px solid #ddd; border-radius:4px; padding:2px 4px; color:#555; background:#fff; max-width:170px; }
+          .to-nav-stat { color:#999; white-space:nowrap; }
+          .to-nav-tag { font-size:10px; font-weight:600; border-radius:10px; padding:1px 7px; white-space:nowrap; color:#16a085; border:1px solid #16a085; }
+          .to-nav-tag.warn { color:#e67e22; border-color:#e67e22; cursor:help; }
+          .to-nav-btn { font-size:11px; padding:2px 7px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
+          .to-nav-btn:hover { background:#f0f0f0; }
+          .to-bundle-label { font-size:9px; font-weight:700; fill:#5a6672; cursor:pointer; }
+          .to-bundle-hit { fill:transparent; cursor:pointer; }
+          /* Collapse handle: every open branch has one, but showing them all at once would
+             put a control on most of the chart, so it surfaces on hover over its node. */
+          .to-node .to-collapse { opacity:0; transition:opacity 0.12s ease; cursor:pointer; }
+          .to-node:hover .to-collapse { opacity:1; }
+          .to-collapse circle { fill:#fff; stroke:#b9c2cb; stroke-width:1; }
+          .to-collapse text { font-size:10px; font-weight:700; fill:#5a6672; }
+          .to-collapse:hover circle { stroke:#e74c3c; }
+          .to-collapse:hover text { fill:#e74c3c; }
           .to-color-legend { position:absolute; bottom:10px; left:10px; display:flex; gap:12px; background:rgba(255,255,255,0.95); padding:6px 11px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }
           .to-legend-item { display:flex; align-items:center; gap:5px; font-size:11px; color:#555; }
           .to-legend-dot { width:8px; height:8px; border-radius:50%; }
@@ -252,6 +297,12 @@
         `;
         element.appendChild(toggle);
 
+        const navBar = document.createElement('div');
+        navBar.className = 'to-nav hidden';
+        navBar.id = 'to-nav';
+        navBar.addEventListener('click', e => e.stopPropagation());
+        element.appendChild(navBar);
+
         const colorLegend = document.createElement('div');
         colorLegend.className = 'to-color-legend';
         colorLegend.id = 'to-color-legend';
@@ -335,6 +386,14 @@
         // insertion order stops matching the order the user actually acted in.
         this._fitOrder     = new Map();
         this._fitSeq       = 0;
+        // ── Scale controls (large orgs) ──
+        this._focusId      = null;        // rerooted subtree; null = whole org
+        this._expanded     = new Set();   // branches the user opened by hand
+        this._collapsed    = new Set();   // branches the user closed by hand
+        this._divView      = '';          // chart-level division selection; '' = all
+        this._divMode      = '';          // how it resolved: 'subtree' | 'filter'
+        this._divRoot      = null;        // in subtree mode, the division's head role
+        this._divLines     = 0;           // in filter mode, how many reporting lines it spans
         // Result of the last Auto-Optimize run (null once the plan is edited by hand).
         this._optReport    = null;
         this._gapIdx       = 0;
@@ -721,11 +780,6 @@
         const cx = W / 2;
         const cy = H / 2;
 
-        const leafCount = root.leaves().length;
-        const minRadius = Math.min(W, H) / 2 - 60;
-        const radius    = Math.max(minRadius, (leafCount * 22) / (2 * Math.PI));
-        const fitScale  = Math.min(1, (Math.min(W, H) - 80) / (radius * 2 + 120));
-
         const svg = d3.select(this._chart).append('svg').attr('width', W).attr('height', H);
         const g   = svg.append('g');
         this._svg = svg;
@@ -733,82 +787,506 @@
         const zoomBehavior = d3.zoom().scaleExtent([0.05, 4]).on('zoom', e => g.attr('transform', e.transform));
         svg.call(zoomBehavior).on('dblclick.zoom', null);
         this._zoom  = zoomBehavior;
-        this._initT = d3.zoomIdentity.translate(cx, cy).scale(fitScale);
-        svg.call(zoomBehavior.transform, this._initT);
-
-        const treeLayout = d3.tree()
-          .size([2 * Math.PI, radius])
-          .separation((a, b) => (a.parent === b.parent ? 1 : 2) / a.depth);
-        treeLayout(root);
 
         function radialPoint(angle, r) {
           return [r * Math.cos(angle - Math.PI / 2), r * Math.sin(angle - Math.PI / 2)];
         }
 
-        const depths = [...new Set(root.descendants().map(d => d.depth))].filter(d => d > 0);
-        const ringG  = g.append('g');
-        depths.forEach(depth => {
-          ringG.append('circle')
-            .attr('r', (depth / root.height) * radius)
-            .attr('fill', 'none')
-            .attr('stroke', '#e8e8e8')
-            .attr('stroke-width', 1)
-            .attr('stroke-dasharray', '3,3');
-        });
+        // ══ Scale engine ════════════════════════════════════════════
+        // At a few dozen roles the whole tree is readable at once. At a few thousand it is
+        // not: the radius is driven by leaf count, so 2000 leaves produce a ~14,000px
+        // diagram that fitScale then crushes to ~0.06 — every node lands under a pixel.
+        // Rather than drop rows (which fragments the hierarchy), this keeps every node in
+        // the data and controls only what gets DRAWN, by three composable means:
+        //   · focus  — reroot on any node, with a breadcrumb back out;
+        //   · bundle — a manager's leaf reports collapse into one marker on the manager;
+        //   · filter — a division filter that also keeps the ancestors of every match, so
+        //              the matches stay attached to the org rather than floating free.
+        // `root` (the full stratify) is never mutated, so every data path — the optimizer,
+        // the fit panel, the scenario engine — keeps seeing the entire organisation.
+        const ALL_NODES  = root.descendants();
+        const childrenOf = (() => {
+          const m = new Map();
+          ALL_NODES.forEach(v => m.set(String(v.data.talent_role_id), (v.children || []).map(c => c.data)));
+          return m;
+        })();
+        const dataOfId = (() => {
+          const m = new Map();
+          ALL_NODES.forEach(v => m.set(String(v.data.talent_role_id), v.data));
+          return m;
+        })();
+        const normUnit = v => String(v == null ? '' : v).trim().toLowerCase();
+        const idOf = d => String((d && d.data ? d.data : d || {}).talent_role_id);
 
-        const linkPaths = g.append('g').attr('fill', 'none').attr('stroke-width', 1)
-          .selectAll('path').data(root.links()).join('path')
-          .attr('stroke', '#ccc')
-          .attr('d', d3.linkRadial().angle(d => d.x).radius(d => d.y));
+        const cfgNum = (key, dflt, min) => {
+          const n = Number(config[key]);
+          return (isFinite(n) && n >= min) ? n : dflt;
+        };
+        const autoDepth  = () => cfgNum('auto_depth', 3, 1);
+        const bundleMin  = () => cfgNum('bundle_min', 8, 2);
 
-        const self  = this;
-        const nodeG = g.append('g').selectAll('g').data(root.descendants()).join('g')
-          .attr('transform', d => {
-            const [x, y] = radialPoint(d.x, d.y);
-            return `translate(${x},${y})`;
-          })
-          .style('cursor', 'pointer')
-          .on('mouseenter', function (event, d) {
-            if (d.data.talent_role_id === '__root__') return;
-            self._showTooltip(event, d, OHI_COLORS, BENCH_RISK_COLORS);
-          })
-          .on('mousemove', function (event, d) {
-            if (d.data.talent_role_id === '__root__') return;
-            self._positionTooltip(event);
-          })
-          .on('mouseleave', function () {
-            self._tooltip.classList.remove('visible');
-          })
-          .on('click', function (event, d) {
-            event.stopPropagation();
-            if (d.data.talent_role_id === '__root__') return;
-            if (self._scenarioMode) {
-              showActionPopover(event, d);
-            } else if (self._fitMode) {
-              showFitExplorer(event, d);
-            } else {
-              self._showEmployeeCard(d, OHI_COLORS, BENCH_RISK_COLORS);
-            }
-            nodeG.selectAll('.to-node-circle')
-              .attr('stroke', n => n.data.talent_role_id === d.data.talent_role_id ? '#3498db' : 'none')
-              .attr('stroke-width', 2.5);
+        // ── Resolving a division to a place in the tree ────────────
+        // A division is a TAG on a role, not a structural unit, so "show me Legal" has two
+        // possible honest answers and which one is right depends on the data:
+        //
+        //   subtree — the division has an identifiable head, so reroot there and draw its
+        //             real subtree. Nothing is filtered, so no manager appears with reports
+        //             missing. This is the truthful view and the one to prefer.
+        //   filter  — the division is scattered across several reporting lines and has no
+        //             single head. There is no subtree to show, so fall back to keeping the
+        //             matches plus their ancestors, with the ancestors drawn faint.
+        //
+        // The pivot is the lowest common ancestor of the tagged roles:
+        //   · LCA is itself in the division  → it is the head. Reroot on it, and keep any
+        //     differently-tagged teams reporting into it, because they genuinely do.
+        //   · LCA is tagged otherwise but NO descendant belongs to another division → it is
+        //     the head with a different tag of its own (a Head of Legal filed under
+        //     "Executive"), which is common. Reroot on it too.
+        //   · anything else → genuinely scattered. Filter.
+        const lcaOf = list => {
+          if (!list.length) return null;
+          let anc = list[0].ancestors().reverse();
+          for (let i = 1; i < list.length && anc.length > 1; i++) {
+            const path = list[i].ancestors().reverse();
+            let k = 0;
+            while (k < anc.length && k < path.length && anc[k] === path[k]) k++;
+            anc = anc.slice(0, k);
+          }
+          return anc[anc.length - 1] || root;
+        };
+
+        const resolveDivision = name => {
+          const want = normUnit(name);
+          if (!want) return { mode: '', rootId: null, lines: 0, matches: 0 };
+          const matches = ALL_NODES.filter(v => normUnit(v.data.division_name) === want);
+          if (!matches.length) return { mode: '', rootId: null, lines: 0, matches: 0 };
+          const L = lcaOf(matches);
+          const headTagged = normUnit(L.data.division_name) === want;
+          const pure = L.descendants().slice(1).every(d => {
+            const dv = normUnit(d.data.division_name);
+            return !dv || dv === want;
+          });
+          // How many of the LCA's branches actually contain the division — the number of
+          // separate reporting lines the user is looking at when we cannot reroot.
+          const lines = (L.children || []).filter(c =>
+            c.descendants().some(d => normUnit(d.data.division_name) === want)).length || 1;
+          if (headTagged || pure) return { mode: 'subtree', rootId: idOf(L), lines: 1, matches: matches.length };
+          return { mode: 'filter', rootId: null, lines, matches: matches.length };
+        };
+
+        // Ancestor-preserving keep set — only used in `filter` mode. Returns null when
+        // everything passes, else every role in the division PLUS every ancestor of one, so
+        // the matches stay hung off the real tree instead of becoming orphan roots.
+        const keepSet = () => {
+          const want = normUnit(self._divView);
+          if (!want || self._divMode !== 'filter') return null;
+          const keep = new Set();
+          ALL_NODES.forEach(v => {
+            if (normUnit(v.data.division_name) !== want) return;
+            v.ancestors().forEach(a => keep.add(idOf(a)));   // includes v itself
+          });
+          return keep;
+        };
+
+        // Children a node should show, given the filter. Order is preserved.
+        const visibleKids = (id, keep) => {
+          const kids = childrenOf.get(String(id)) || [];
+          return keep ? kids.filter(k => keep.has(String(k.talent_role_id))) : kids;
+        };
+
+        // Should this node's children be folded away? User intent wins; otherwise a branch
+        // folds when it is deeper than the depth budget, or when it is a manager whose
+        // reports are all leaves and numerous enough to be worth bundling.
+        const shouldFold = (id, kids, relDepth, budget) => {
+          const key = String(id);
+          if (self._expanded.has(key))  return false;
+          if (self._collapsed.has(key)) return true;
+          if (!kids.length) return false;
+          if (relDepth >= budget) return true;
+          const allLeaves = kids.every(k => (childrenOf.get(String(k.talent_role_id)) || []).length === 0);
+          return allLeaves && kids.length >= bundleMin();
+        };
+
+        // How many roles sit under a folded node (its whole hidden subtree), and the band
+        // mix down there — that mix is what the ring around a folded node draws, so a
+        // collapsed branch still reports the health of what it is hiding.
+        const hiddenStats = (id, keep) => {
+          const bands = { High: 0, Medium: 0, Low: 0, 'N/A': 0 };
+          let count = 0;
+          const walk = pid => visibleKids(pid, keep).forEach(k => {
+            count++;
+            const b = (self._fitMode && k._placedUser) ? (k._placedUser.band || 'N/A') : (k.org_health_index || 'N/A');
+            bands[b in bands ? b : 'N/A']++;
+            walk(k.talent_role_id);
+          });
+          walk(id);
+          return { count, bands };
+        };
+
+        // The hierarchy that actually gets drawn. Built fresh from the data objects each
+        // draw, so depths restart at the focus (d3.tree places by absolute depth — laying
+        // out a subtree of the original hierarchy would push the focus off centre).
+        let viewRoot = null, viewIndex = new Map(), radius = 0, fitScale = 1;
+
+        const buildView = () => {
+          const keep    = keepSet();
+          const focusD  = self._focusId ? dataOfId.get(String(self._focusId)) : null;
+          if (self._focusId && !focusD) self._focusId = null;     // stale after a data change
+          const rootD   = focusD || root.data;
+
+          const construct = (budget, autoOpen) => {
+            const open = id => autoOpen && autoOpen.has(String(id)) && !self._collapsed.has(String(id));
+            const h = d3.hierarchy(rootD, d => {
+              const kids = visibleKids(d.talent_role_id, keep);
+              return (!open(d.talent_role_id) && shouldFold(d.talent_role_id, kids, 0, budget)) ? null : kids;
+            });
+            // The children accessor cannot see depth, so depth-folding happens here.
+            h.each(v => {
+              if (!v.children) return;
+              if (!open(idOf(v)) && shouldFold(idOf(v), v.children.map(c => c.data), v.depth, budget)) v.children = null;
+            });
+            return h;
+          };
+
+          // Depth alone does not bound the drawing — one broad level of a 2000-person org
+          // is still hundreds of nodes. So the depth budget is tightened until the node
+          // count is one a human can actually read. Branches the user opened by hand are
+          // exempt (shouldFold honours `_expanded` first), so tightening never undoes a
+          // deliberate expansion.
+          //
+          // The default ceiling is derived from the tile rather than fixed, because
+          // "readable" is a property of the viewport: it is how many nodes fit around the
+          // outer ring at ~14px of arc each, at the largest radius that needs no shrinking
+          // to fit. A fixed 250 looks fine in a full-screen tile and unreadable in a small
+          // one. A non-zero `max_nodes` overrides it.
+          const ringRoom = Math.max(40, Math.round((2 * Math.PI * (Math.min(W, H) / 2 - 60)) / 14));
+          const maxNodes = cfgNum('max_nodes', 0, 1) || ringRoom;
+          let budget = Math.max(1, autoDepth());
+          viewRoot = construct(budget, null);
+          while (viewRoot.descendants().length > maxNodes && budget > 1) {
+            budget -= 1;
+            viewRoot = construct(budget, null);
+          }
+          // Whole levels are coarse — one broad level can overshoot the budget badly, and
+          // dropping to the level above then leaves most of the screen empty. So spend
+          // what is left by opening folded branches cheapest-first, which shows as much of
+          // the org as fits rather than stopping at a level boundary.
+          // Repeat to a fixed point: opening a branch exposes children that may themselves
+          // be folded, and a single pass would leave those closed even with budget to
+          // spare — which is what made a 74-role org report "73 of 74 shown".
+          const autoOpen = new Set();
+          let drawn = viewRoot.descendants().length;
+          for (let pass = 0; pass < 12; pass++) {
+            if (drawn >= maxNodes) break;
+            const candidates = [];
+            viewRoot.each(v => {
+              // A branch the user closed by hand is not a candidate. Without this it would
+              // be charged against the budget every pass while `open()` refused to actually
+              // open it, quietly starving the rest of the tree of room.
+              if (v.children || autoOpen.has(idOf(v)) || self._collapsed.has(idOf(v))) return;
+              const kids = visibleKids(idOf(v), keep);
+              if (kids.length) candidates.push({ id: idOf(v), cost: kids.length });
+            });
+            if (!candidates.length) break;
+            candidates.sort((a, b) => a.cost - b.cost || (a.id < b.id ? -1 : 1));
+            let added = 0;
+            candidates.forEach(c => {
+              if (drawn + c.cost > maxNodes) return;
+              autoOpen.add(c.id);
+              drawn += c.cost;
+              added++;
+            });
+            if (!added) break;
+            viewRoot = construct(budget, autoOpen);
+            drawn = viewRoot.descendants().length;
+          }
+          viewIndex = new Map();
+          viewRoot.each(v => viewIndex.set(idOf(v), v));
+          // Mark what each drawn node is hiding, and whether it is only present as a
+          // connector to a filtered match (those are drawn faint).
+          const keepNow = keep;
+          viewRoot.each(v => {
+            const kids = visibleKids(idOf(v), keepNow);
+            v._folded  = kids.length > 0 && !v.children;
+            v._hidden  = v._folded ? hiddenStats(idOf(v), keepNow) : null;
+            v._connect = !!(keepNow && normUnit(v.data.division_name) !== normUnit(self._divView));
+          });
+          const leafCount = viewRoot.leaves().length;
+          const minRadius = Math.min(W, H) / 2 - 60;
+          radius   = Math.max(minRadius, (leafCount * 22) / (2 * Math.PI));
+          fitScale = Math.min(1, (Math.min(W, H) - 80) / (radius * 2 + 120));
+          self._initT = d3.zoomIdentity.translate(cx, cy).scale(fitScale);
+        };
+
+        const viewById  = id => viewIndex.get(String(id)) || null;
+        const isDrawn   = v => viewIndex.has(idOf(v));
+
+        const self = this;
+
+        // Breadcrumb trail out of a focused subtree, the division filter, and a count of
+        // what is drawn versus what exists. The bar hides itself entirely on a small org
+        // that needs none of it, so the 74-role case looks exactly as it did before.
+        const divisionsInData = [...new Set(realNodes()
+          .map(n => (n.division_name || '').trim()).filter(Boolean))].sort();
+
+        const renderNav = () => {
+          const el = document.getElementById('to-nav');
+          if (!el) return;
+          const drawn  = viewRoot ? viewRoot.descendants().length : 0;
+          const total  = ALL_NODES.length;
+          const focusV = self._focusId ? ALL_NODES.find(v => idOf(v) === String(self._focusId)) : null;
+          const needed = self._focusId || self._divView || drawn < total;
+          if (!needed) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+
+          const trail = focusV ? focusV.ancestors().reverse() : [root];
+          const crumbs = trail.map((v, i) => {
+            const last = i === trail.length - 1;
+            const nm   = v.data.talent_role_id === '__root__' ? 'Whole organisation'
+                       : (v.data.talent_role_name || '—');
+            return `<span class="to-crumb${last ? ' here' : ''}" data-crumb="${escAttr(v.data.talent_role_id)}" title="${escAttr(nm)}">${nm}</span>`;
+          }).join('<span class="to-crumb-sep">›</span>');
+
+          el.innerHTML = `
+            ${crumbs}
+            <span style="width:1px;height:14px;background:#e0e0e0;"></span>
+            <select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
+              <option value="">All divisions</option>
+              ${divisionsInData.map(d => `<option value="${escAttr(d)}" ${normUnit(d) === normUnit(self._divView) ? 'selected' : ''}>${d}</option>`).join('')}
+            </select>
+            ${self._divMode === 'filter'
+              ? `<span class="to-nav-tag warn" title="This division has no single head — it sits under ${self._divLines} separate reporting lines, so there is no subtree to show. Showing the tagged roles plus the managers above them (faint).">⚠ ${self._divLines} reporting lines · filtered</span>`
+              : (self._divMode === 'subtree' ? `<span class="to-nav-tag">full subtree</span>` : '')}
+            ${drawn < total ? `<button class="to-nav-btn" id="to-nav-all">Expand all</button>` : ''}
+            ${(self._expanded.size || self._collapsed.size) ? `<button class="to-nav-btn" id="to-nav-auto" title="Forget the branches you opened and closed by hand and re-fit automatically">Auto-fit</button>` : ''}
+            <span class="to-nav-stat">${drawn} of ${total} shown</span>`;
+
+          el.classList.remove('hidden');
+          el.querySelectorAll('[data-crumb]').forEach(c => {
+            c.onclick = () => {
+              const id = c.getAttribute('data-crumb');
+              if (id !== String(self._focusId)) focusOn(id);
+            };
+          });
+          const sel = document.getElementById('to-nav-div');
+          if (sel) sel.onchange = () => {
+            const r = resolveDivision(sel.value);
+            self._divView = sel.value;
+            self._divMode = r.mode;
+            self._divRoot = r.rootId;
+            self._divLines = r.lines;
+            // subtree mode is just a reroot, so it reuses the focus machinery wholesale —
+            // breadcrumb, zoom framing and the node budget all behave as if the user had
+            // double-clicked the division head.
+            self._focusId = r.mode === 'subtree' ? r.rootId : null;
+            self._expanded.clear();
+            self._collapsed.clear();
+            redraw(true);
+          };
+          const autoBtn = document.getElementById('to-nav-auto');
+          if (autoBtn) autoBtn.onclick = () => {
+            self._expanded.clear();
+            self._collapsed.clear();
+            redraw(true);
+          };
+          const allBtn = document.getElementById('to-nav-all');
+          // Deliberately capped: past a few hundred nodes the drawing stops being readable,
+          // which is the problem this whole mechanism exists to solve.
+          if (allBtn) allBtn.onclick = () => {
+            if (total > 600 && !window.confirm(`Expanding shows all ${total} roles at once, which gets hard to read. Continue?`)) return;
+            ALL_NODES.forEach(v => self._expanded.add(idOf(v)));
+            self._collapsed.clear();
+            redraw(true);
+          };
+        };
+
+        // Rebound on every draw, so the rest of the file keeps referring to the current
+        // selections by name.
+        let linkPaths = g.append('g').attr('fill', 'none').attr('stroke-width', 1).selectAll('path');
+        let nodeG     = g.append('g').selectAll('g');
+        let ringG     = g.append('g');
+        let labelG    = g.append('g').attr('class', 'to-labels');
+        const nodeRadius  = d => d._folded ? Math.min(11, 6 + Math.log2((d._hidden ? d._hidden.count : 1) + 1))
+                               : (d.depth === 0 ? 9 : d.children ? 6 : 5);
+        const bandArc = d3.arc();
+
+        const drawTree = () => {
+          buildView();
+          g.selectAll('*').remove();
+          ringG     = g.append('g');
+          const lg  = g.append('g').attr('fill', 'none').attr('stroke-width', 1);
+          const ng  = g.append('g');
+
+          const treeLayout = d3.tree()
+            .size([2 * Math.PI, radius])
+            .separation((a, b) => (a.parent === b.parent ? 1 : 2) / Math.max(1, a.depth));
+          treeLayout(viewRoot);
+
+          const depths = [...new Set(viewRoot.descendants().map(d => d.depth))].filter(d => d > 0);
+          depths.forEach(depth => {
+            ringG.append('circle')
+              .attr('r', (depth / Math.max(1, viewRoot.height)) * radius)
+              .attr('fill', 'none').attr('stroke', '#e8e8e8')
+              .attr('stroke-width', 1).attr('stroke-dasharray', '3,3');
           });
 
-        this._nodeG = nodeG;
+          linkPaths = lg.selectAll('path').data(viewRoot.links()).join('path')
+            .attr('stroke', '#ccc')
+            .attr('d', d3.linkRadial().angle(d => d.x).radius(d => d.y));
 
-        const nodeRadius = d => d.depth === 0 ? 9 : d.children ? 6 : 5;
+          nodeG = ng.selectAll('g').data(viewRoot.descendants()).join('g')
+            .attr('class', 'to-node')
+            .attr('transform', d => {
+              const [x, y] = radialPoint(d.x, d.y);
+              return `translate(${x},${y})`;
+            })
+            .style('cursor', 'pointer')
+            .style('opacity', d => d._connect ? 0.35 : 1)
+            .on('mouseenter', function (event, d) {
+              if (d.data.talent_role_id === '__root__') return;
+              self._showTooltip(event, d, OHI_COLORS, BENCH_RISK_COLORS);
+            })
+            .on('mousemove', function (event, d) {
+              if (d.data.talent_role_id === '__root__') return;
+              self._positionTooltip(event);
+            })
+            .on('mouseleave', function () {
+              self._tooltip.classList.remove('visible');
+            })
+            .on('click', function (event, d) {
+              event.stopPropagation();
+              if (d.data.talent_role_id === '__root__') return;
+              if (self._scenarioMode) {
+                showActionPopover(event, d);
+              } else if (self._fitMode) {
+                showFitExplorer(event, d);
+              } else {
+                self._showEmployeeCard(d, OHI_COLORS, BENCH_RISK_COLORS);
+              }
+              nodeG.selectAll('.to-node-circle')
+                .attr('stroke', n => n.data.talent_role_id === d.data.talent_role_id ? '#3498db' : 'none')
+                .attr('stroke-width', 2.5);
+            })
+            // Double-click reroots on the node. dblclick.zoom is already unbound, so the
+            // gesture is free, and it keeps drill-down off the single click that every
+            // mode already spends on its own popover.
+            .on('dblclick', function (event, d) {
+              event.stopPropagation();
+              event.preventDefault();
+              const kids = childrenOf.get(idOf(d)) || [];
+              if (!kids.length) return;
+              focusOn(idOf(d));
+            });
 
-        nodeG.append('circle').attr('class', 'to-node-circle')
-          .attr('r', d => nodeRadius(d) + 3)
-          .attr('fill', '#fff')
-          .attr('stroke', 'none')
-          .attr('stroke-width', 2.5);
+          self._nodeG = nodeG;
 
-        nodeG.append('circle')
-          .attr('r', d => nodeRadius(d))
-          .attr('fill', d => nodeColor(d))
-          .attr('stroke', '#fff')
-          .attr('stroke-width', d => d.depth === 0 ? 3 : 1.5);
+          nodeG.append('circle').attr('class', 'to-node-circle')
+            .attr('r', d => nodeRadius(d) + 3)
+            .attr('fill', '#fff').attr('stroke', 'none').attr('stroke-width', 2.5);
+
+          nodeG.append('circle')
+            .attr('r', d => nodeRadius(d))
+            .attr('fill', d => nodeColor(d))
+            .attr('stroke', '#fff')
+            .attr('stroke-width', d => d.depth === 0 ? 3 : 1.5);
+
+          // ── Folded branches ──
+          // A ring of band-coloured arcs around the node, proportioned to the health mix of
+          // everything it is hiding, plus a click target that opens it. The point is that a
+          // collapsed branch still reports what is inside it, so folding costs no signal.
+          const folded = nodeG.filter(d => d._folded);
+          folded.each(function (d) {
+            const gsel  = d3.select(this);
+            const r0    = nodeRadius(d) + 3.5, r1 = r0 + 3.5;
+            const total = d._hidden.count || 1;
+            let a0 = 0;
+            ['High', 'Medium', 'Low', 'N/A'].forEach(band => {
+              const n = d._hidden.bands[band];
+              if (!n) return;
+              const a1 = a0 + (n / total) * 2 * Math.PI;
+              gsel.append('path')
+                .attr('d', bandArc({ innerRadius: r0, outerRadius: r1, startAngle: a0, endAngle: a1 }))
+                .attr('fill', OHI_COLORS[band] || OHI_COLORS['N/A']);
+              a0 = a1;
+            });
+            gsel.append('text').attr('class', 'to-bundle-label')
+              .attr('x', r1 + 3).attr('y', 3).text(`+${d._hidden.count}`);
+            gsel.append('rect').attr('class', 'to-bundle-hit')
+              .attr('x', -r1 - 2).attr('y', -r1 - 2)
+              .attr('width', r1 * 2 + 34).attr('height', r1 * 2 + 4)
+              .on('click', ev => { ev.stopPropagation(); expandNode(idOf(d)); });
+          });
+
+          // ── Open branches get a collapse handle ──
+          // The counterpart to the "+N" marker: anything drawn with children can be shut
+          // again. Revealed on hover, so the chart is not littered with controls, and not
+          // offered on the view root, which would blank the chart.
+          // Placed to the LEFT: the hover tooltip opens down-and-right of the cursor and
+          // would sit straight on top of a right-hand handle. It also keeps the two markers
+          // on opposite sides, so "+N" to open and "−" to close never overlap.
+          nodeG.filter(d => !!d.children && d.depth > 0).each(function (d) {
+            const gsel = d3.select(this);
+            const h = gsel.append('g').attr('class', 'to-collapse')
+              .attr('transform', `translate(${-(nodeRadius(d) + 10)},0)`)
+              .on('click', ev => { ev.stopPropagation(); collapseNode(idOf(d)); });
+            h.append('title').text(`Collapse ${d.data.talent_role_name || 'this branch'}`);
+            h.append('circle').attr('r', 5.5);
+            h.append('text').attr('text-anchor', 'middle').attr('y', 3.5).text('−');
+          });
+
+          // Search callouts are drawn into their own layer above the nodes; it has to be
+          // re-created here because the redraw clears everything under `g`.
+          labelG = g.append('g').attr('class', 'to-labels');
+          renderNav();
+        };
+
+        // Reroot, open, and close. Each records intent then redraws. `g`'s own zoom
+        // transform survives the redraw (only its children are cleared), so the view only
+        // moves when we ask it to — on a reroot, where the new subtree needs framing.
+        const redraw = (refit) => {
+          drawTree();
+          applyActiveMode();
+          if (refit) svg.transition().duration(400).call(zoomBehavior.transform, self._initT);
+        };
+        const focusOn = id => {
+          self._focusId = (String(id) === idOf(root)) ? null : String(id);
+          // Navigating out of a division's subtree abandons the division: the select would
+          // otherwise still read "Legal" while the chart showed something else. Drilling
+          // DEEPER inside it keeps the selection, which is what the user means.
+          if (self._divRoot) {
+            const dv = ALL_NODES.find(v => idOf(v) === String(self._divRoot));
+            const to = ALL_NODES.find(v => idOf(v) === String(id));
+            const inside = dv && to && to.ancestors().some(a => a === dv);
+            if (!inside) { self._divView = ''; self._divMode = ''; self._divRoot = null; }
+          }
+          self._expanded.clear();     // a new frame of reference; old open/closed state is noise
+          self._collapsed.clear();
+          self._hideEmployeeCard();
+          self._action.classList.remove('visible');
+          redraw(true);
+        };
+        const expandNode = id => {
+          self._expanded.add(String(id));
+          self._collapsed.delete(String(id));
+          redraw(false);
+        };
+        // Closing a branch has to be recorded as intent, not just left to the auto rules:
+        // the budget filler would otherwise re-open it on the very next draw, since there
+        // is now spare room. `shouldFold` checks `_collapsed` before anything else.
+        const collapseNode = id => {
+          self._collapsed.add(String(id));
+          self._expanded.delete(String(id));
+          redraw(false);
+        };
+        // Open every ancestor of a node (and clear a focus that excludes it) so a node the
+        // user asked for — from search, the placements panel, a cascade row — is on screen.
+        const revealNode = id => {
+          const v = ALL_NODES.find(n => idOf(n) === String(id));
+          if (!v) return false;
+          if (viewById(id)) return false;
+          if (self._focusId && !v.ancestors().some(a => idOf(a) === String(self._focusId))) self._focusId = null;
+          v.ancestors().forEach(a => { self._expanded.add(idOf(a)); self._collapsed.delete(idOf(a)); });
+          return true;
+        };
 
         document.getElementById('to-zoom-in').onclick    = () => svg.transition().duration(250).call(zoomBehavior.scaleBy, 1.3);
         document.getElementById('to-zoom-out').onclick   = () => svg.transition().duration(250).call(zoomBehavior.scaleBy, 0.77);
@@ -985,8 +1463,19 @@
         const nodePos  = v => radialPoint(v.x, v.y);
 
         // Animate the viewport to frame one or more nodes (fits their bounding box).
+        // Targets arrive as nodes of the FULL tree (from nodeById, the placements panel,
+        // the cascade). Any that are currently folded away or outside the focused subtree
+        // are revealed first — otherwise "locate this role" would fly to a stale position
+        // or silently do nothing.
         const flyToNodes = (targets, opts = {}) => {
-          const pts = (targets || []).filter(Boolean).map(nodePos);
+          const list = (targets || []).filter(Boolean);
+          if (list.some(v => !viewById(idOf(v)))) {
+            let changed = false;
+            list.forEach(v => { if (revealNode(idOf(v))) changed = true; });
+            if (changed) redraw(false);
+          }
+          const resolve = v => viewById(idOf(v));
+          const pts = list.map(resolve).filter(Boolean).map(nodePos);
           if (!pts.length) return;
           const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
           const minX = Math.min(...xs), maxX = Math.max(...xs);
@@ -1007,7 +1496,9 @@
         };
 
         // A brief expanding ring locator on a node (drawn in chart space so it pans/zooms).
-        const pingNode = v => {
+        const pingNode = full => {
+          const v = viewById(idOf(full));
+          if (!v) return;                        // folded away; nothing on screen to ring
           const [x, y] = nodePos(v);
           const r0 = (v.depth === 0 ? 9 : v.children ? 6 : 5);
           const ring = () => g.append('circle')
@@ -2237,19 +2728,37 @@
           renderCascade();
         };
 
+        // First paint. Everything the draw touches — nodeColor, the popovers, the nav bar,
+        // applyActiveMode — is defined by this point, so this is the earliest safe moment.
+        drawTree();
+        svg.call(zoomBehavior.transform, this._initT);
+
         // Reflect the current mode after every (re-)render, and paint the summary.
         applyActiveMode();
 
         // ── Search / highlight ─────────────────────────────────────
-        const labelG = g.append('g').attr('class', 'to-labels');
 
         const applySearch = query => {
           labelG.selectAll('*').remove();
           const q = query.trim().toLowerCase();
 
           if (!q) {
-            nodeG.style('opacity', 1);
+            nodeG.style('opacity', d => d._connect ? 0.35 : 1);
             return;
+          }
+
+          // Search reaches the whole organisation, not just what is drawn: a match hiding
+          // inside a folded branch is exactly the case the folding created, so open its
+          // ancestors and redraw before highlighting. Capped, because a two-letter query
+          // would otherwise unfold the entire org.
+          const hits = ALL_NODES.filter(d => d.data.talent_role_id !== '__root__' &&
+            ((d.data.employee_name || '').toLowerCase().includes(q) ||
+             (d.data.talent_role_name || '').toLowerCase().includes(q)));
+          const buried = hits.filter(d => !viewById(idOf(d)));
+          if (buried.length && buried.length <= 40) {
+            let changed = false;
+            buried.forEach(d => { if (revealNode(idOf(d))) changed = true; });
+            if (changed) { redraw(false); labelG.selectAll('*').remove(); }
           }
 
           nodeG.style('opacity', d => {
@@ -2260,7 +2769,7 @@
           });
 
           // draw callout labels for matched nodes
-          root.descendants().forEach(d => {
+          viewRoot.descendants().forEach(d => {
             if (d.data.talent_role_id === '__root__') return;
             const name = (d.data.employee_name   || '').toLowerCase();
             const role = (d.data.talent_role_name || '').toLowerCase();
