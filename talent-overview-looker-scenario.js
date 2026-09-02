@@ -199,7 +199,10 @@
           .to-ec-succ-empty { padding:12px 16px; color:#aaa; font-size:12px; }
 
           /* ── Cascade / impact panel (left-docked, appears in Simulate when changes exist) ── */
-          .to-cascade { position:absolute; top:52px; left:10px; width:238px; max-height:calc(100% - 150px); background:rgba(255,255,255,0.97); border-radius:8px; box-shadow:0 2px 14px rgba(0,0,0,0.16); z-index:15; display:none; flex-direction:column; overflow:hidden; }
+          /* 272px matches the summary panel opposite it. The fit rows carry two more
+             elements than the scenario rows (step number + undo), and at 238px the role
+             name was left with too little room to be readable. */
+          .to-cascade { position:absolute; top:52px; left:10px; width:272px; max-height:calc(100% - 150px); background:rgba(255,255,255,0.97); border-radius:8px; box-shadow:0 2px 14px rgba(0,0,0,0.16); z-index:15; display:none; flex-direction:column; overflow:hidden; }
           .to-cascade.visible { display:flex; }
           .to-casc-head { padding:10px 13px; font-weight:700; font-size:12px; color:#222; border-bottom:1px solid #eee; flex-shrink:0; }
           .to-casc-nav { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; border-bottom:1px solid #f0f0f0; font-size:11px; color:#e74c3c; font-weight:600; flex-shrink:0; }
@@ -217,6 +220,11 @@
           .to-casc-undo { flex-shrink:0; width:17px; height:17px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; color:#bbb; cursor:pointer; opacity:0; transition:opacity 0.12s ease, background 0.12s ease; }
           .to-casc-row:hover .to-casc-undo { opacity:1; }
           .to-casc-undo:hover { background:#fdecea; color:#e74c3c; }
+          /* Fit-mode rows keep the ✕ faintly visible rather than hover-only: undoing a
+             placement is a routine step here, and a control you have to discover by
+             hovering reads as "there is no undo". Scenario rows keep the hover-only ✕. */
+          .to-casc-row.undoable .to-casc-undo { opacity:0.5; }
+          .to-casc-seq { flex-shrink:0; width:13px; text-align:right; font-size:10px; color:#bbb; font-variant-numeric:tabular-nums; }
         `;
         element.appendChild(style);
 
@@ -312,6 +320,11 @@
         this._scenario     = new Map();
         // seat roleId -> home roleId of the person now occupying it (non-identity only)
         this._fitAssign    = new Map();
+        // seat roleId -> the tick at which it last changed hands. `_fitAssign` cannot
+        // carry this: its entries are deleted and re-set as seats change, so Map
+        // insertion order stops matching the order the user actually acted in.
+        this._fitOrder     = new Map();
+        this._fitSeq       = 0;
         // Result of the last Auto-Optimize run (null once the plan is edited by hand).
         this._optReport    = null;
         this._gapIdx       = 0;
@@ -1180,9 +1193,19 @@
         // Where a person (identified by their home role) is sitting right now.
         const seatOf = personHome => seatIndex.get(String(personHome)) || String(personHome);
 
+        // Every assignment change funnels through here, which makes it the one place that
+        // can stamp the order things happened in. A seat that changes hands again is
+        // re-stamped, so it moves to the end of the list — the newest decision about it is
+        // the one with a timestamp. A seat returning to its own incumbent leaves entirely.
         const setOccupant = (seatId, personHome) => {
-          if (String(seatId) === String(personHome)) self._fitAssign.delete(String(seatId));
-          else self._fitAssign.set(String(seatId), String(personHome));
+          const seat = String(seatId), person = String(personHome);
+          if (seat === person) {
+            self._fitAssign.delete(seat);
+            self._fitOrder.delete(seat);
+          } else {
+            self._fitAssign.set(seat, person);
+            self._fitOrder.set(seat, ++self._fitSeq);
+          }
         };
 
         // Derive every node's display state from the assignment. Keeps `_placedUser` as
@@ -1221,7 +1244,13 @@
         const movePersonTo = (personHome, seatId) => swapSeats(seatOf(personHome), seatId);
         // Send a seat's ORIGINAL incumbent back to it (displacing whoever is there).
         const restoreSeat  = seatId => swapSeats(seatOf(seatId), seatId);
-        const clearAssignment = () => { self._fitAssign.clear(); rebuildSeatIndex(); syncPlacements(); };
+        const clearAssignment = () => {
+          self._fitAssign.clear();
+          self._fitOrder.clear();
+          self._fitSeq = 0;
+          rebuildSeatIndex();
+          syncPlacements();
+        };
 
         syncPlacements();   // rehydrate placements after a Looker re-render
 
@@ -1675,31 +1704,63 @@
           if (!self._fitMode) { el.classList.remove('visible'); el.innerHTML = ''; return; }
           const placed = root.descendants().filter(v => v.data.talent_role_id !== '__root__' && v.data._placedUser);
           if (!placed.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
-          placed.sort((a, b) => String(a.data.talent_role_name || '').localeCompare(String(b.data.talent_role_name || '')));
+          // Chronological, oldest first, so the list reads as a log of what you did. The
+          // two halves of a swap are stamped consecutively and therefore stay adjacent.
+          // Name is only a tie-break for entries with no stamp (nothing should hit it).
+          const seqOf = v => self._fitOrder.get(String(v.data.talent_role_id)) ?? Number.MAX_SAFE_INTEGER;
+          placed.sort((a, b) => (seqOf(a) - seqOf(b)) ||
+            String(a.data.talent_role_name || '').localeCompare(String(b.data.talent_role_name || '')));
           el.innerHTML = `
             <div class="to-casc-head">Placements (${placed.length})</div>
             <div class="to-casc-list">
-              ${placed.map(v => {
+              ${placed.map((v, i) => {
                 const pu    = v.data._placedUser;
                 const band  = pu.band || 'N/A';
                 const color = OHI_COLORS[band] || OHI_COLORS['N/A'];
                 const role  = v.data.talent_role_name || '—';
                 const who   = pu.name || '—';
                 const ci    = String(who).split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                // No band chip here, unlike the scenario rows: the avatar already carries
+                // the band as colour, and the row now also holds a step number and an undo.
+                // The role name is the most useful text in the row, so the band moves to
+                // the sub-line as coloured text and the name gets the width back.
                 return `
-                  <div class="to-casc-row" data-role="${escAttr(v.data.talent_role_id)}">
+                  <div class="to-casc-row undoable" data-role="${escAttr(v.data.talent_role_id)}">
+                    <span class="to-casc-seq">${i + 1}</span>
                     <span class="to-casc-av" style="background:${color}">${ci}</span>
                     <span class="to-casc-body">
                       <span class="to-casc-role" title="${escAttr(role)}">${role}</span>
-                      <span class="to-casc-who" title="${escAttr(who)}">← ${who}${pu.role_fit != null ? ` · fit ${pu.role_fit}` : ''}</span>
+                      <span class="to-casc-who" title="${escAttr(who)}">← ${who}${pu.role_fit != null ? ` · fit ${pu.role_fit}` : ''} · <b style="color:${color};font-weight:600;">${band}</b></span>
                     </span>
-                    <span class="to-casc-chip" style="color:${color};border-color:${color};">${band}</span>
+                    <span class="to-casc-undo" data-undo="${escAttr(v.data.talent_role_id)}" title="Undo — send this role's own incumbent back">✕</span>
                   </div>`;
               }).join('')}
             </div>`;
           el.classList.add('visible');
           el.querySelectorAll('[data-role]').forEach(rowEl => {
-            rowEl.onclick = () => { const v = nodeById(rowEl.getAttribute('data-role')); if (v) flyToNodes([v], { ping: [v] }); };
+            rowEl.onclick = ev => {
+              if (ev.target.closest('[data-undo]')) return;   // ✕ handled separately
+              const v = nodeById(rowEl.getAttribute('data-role'));
+              if (v) flyToNodes([v], { ping: [v] });
+            };
+          });
+
+          // ✕ → hand this seat back to its original incumbent. For a plain two-person swap
+          // that returns BOTH people home and clears both rows; inside a longer rotation it
+          // peels this one seat out and leaves the rest of the cycle standing.
+          el.querySelectorAll('[data-undo]').forEach(x => {
+            x.onclick = ev => {
+              ev.stopPropagation();
+              const seatId = x.getAttribute('data-undo');
+              const v = nodeById(seatId);
+              restoreSeat(seatId);
+              self._optReport = null;              // a hand edit invalidates its before/after
+              self._action.classList.remove('visible');   // popover would now be stale
+              paintFit();
+              renderSummary();
+              renderFitPanel();
+              if (v) flyToNodes([v], { ping: [v] });
+            };
           });
         };
 
