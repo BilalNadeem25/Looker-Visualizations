@@ -81,14 +81,18 @@
           .to-tt-dot { width:8px; height:8px; border-radius:50%; }
           .to-score-wrap { background:rgba(255,255,255,0.15); border-radius:3px; height:5px; overflow:hidden; width:70px; }
           .to-score-bar { height:100%; border-radius:3px; }
-          .to-summary { position:absolute; bottom:10px; right:10px; background:rgba(255,255,255,0.95); border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); padding:10px 14px; font-size:11px; color:#444; min-width:200px; max-height:calc(100% - 20px); overflow-y:auto; z-index:10; }
-          .to-summary-title { font-weight:700; font-size:11px; color:#222; margin-bottom:6px; padding-bottom:5px; border-bottom:1px solid #eee; }
-          .to-summary-row { display:flex; justify-content:space-between; padding:2px 0; gap:16px; }
+          /* max-width is what actually keeps this box small: without it the long
+             optimizer "Rejected: …" line sets the width and the panel sprawls across the
+             tile. Bounded, that text wraps instead. Values stay nowrap so a wrapping row
+             breaks the label, never "26.4 → 27.5". */
+          .to-summary { position:absolute; bottom:10px; right:10px; background:rgba(255,255,255,0.95); border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); padding:9px 11px; font-size:13px; color:#444; min-width:190px; max-width:272px; max-height:calc(100% - 20px); overflow-y:auto; z-index:10; }
+          .to-summary-title { font-weight:700; font-size:13px; color:#222; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #eee; }
+          .to-summary-row { display:flex; justify-content:space-between; padding:1px 0; gap:8px; }
           .to-summary-label { color:#888; }
-          .to-summary-value { font-weight:600; color:#222; }
-          .to-summary-section { margin-top:6px; padding-top:5px; border-top:1px solid #eee; }
-          .to-summary-section-title { font-weight:600; color:#555; margin-bottom:3px; }
-          .to-summary-dot-row { display:flex; align-items:center; justify-content:space-between; padding:2px 0; gap:8px; }
+          .to-summary-value { font-weight:600; color:#222; white-space:nowrap; }
+          .to-summary-section { margin-top:5px; padding-top:4px; border-top:1px solid #eee; }
+          .to-summary-section-title { font-weight:600; color:#555; margin-bottom:2px; }
+          .to-summary-dot-row { display:flex; align-items:center; justify-content:space-between; padding:1px 0; gap:8px; }
           .to-summary-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
           .to-search { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:10; display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }
           .to-search input { border:1px solid #ddd; border-radius:4px; padding:3px 8px; font-size:11px; outline:none; width:180px; color:#333; }
@@ -103,9 +107,9 @@
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
           .to-btn.auto { border-color:#8e44ad; color:#8e44ad; font-weight:600; }
           .to-btn.auto:hover:not(:disabled) { background:#f6eefb; }
-          .to-opt-block { margin-top:6px; padding-top:5px; border-top:1px solid #eee; }
-          .to-opt-title { font-weight:600; color:#8e44ad; margin-bottom:3px; }
-          .to-opt-note { font-size:10px; color:#999; line-height:1.35; margin-top:3px; }
+          .to-opt-block { margin-top:5px; padding-top:4px; border-top:1px solid #eee; }
+          .to-opt-title { font-weight:600; color:#8e44ad; margin-bottom:2px; }
+          .to-opt-note { font-size:12px; color:#999; line-height:1.3; margin-top:3px; }
           .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
           .to-tabs { display:flex; gap:4px; margin-top:8px; }
@@ -124,9 +128,9 @@
           .to-divchk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
           .to-divhint { font-size:9px; color:rgba(255,255,255,0.4); flex-shrink:0; }
           .to-divname { font-size:9px; color:#16a085; font-weight:600; letter-spacing:0.2px; padding:0 0 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-          .to-sum-chk { display:flex; align-items:center; gap:5px; font-size:10px; color:#666; cursor:pointer; margin-top:8px; }
-          .to-sum-chk input { width:11px; height:11px; cursor:pointer; accent-color:#16a085; }
-          .to-exp-open { width:100%; margin-top:8px; padding:6px 8px; border:1px solid #16a085; border-radius:5px; background:#fff; color:#16a085; font-size:11px; font-weight:600; cursor:pointer; }
+          .to-sum-chk { display:flex; align-items:center; gap:5px; font-size:12px; color:#666; cursor:pointer; margin-top:6px; }
+          .to-sum-chk input { width:12px; height:12px; cursor:pointer; accent-color:#16a085; flex-shrink:0; }
+          .to-exp-open { width:100%; margin-top:6px; padding:5px 8px; border:1px solid #16a085; border-radius:5px; background:#fff; color:#16a085; font-size:13px; font-weight:600; cursor:pointer; }
           .to-exp-open:hover { background:#eafaf6; }
           .to-exp-open:disabled { opacity:0.4; cursor:default; border-color:#ccc; color:#999; }
 
@@ -137,10 +141,9 @@
           .to-exp-head { display:flex; align-items:center; justify-content:space-between; padding:12px 15px; border-bottom:1px solid #eee; font-weight:700; font-size:13px; color:#222; flex-shrink:0; }
           .to-exp-x { cursor:pointer; color:#b0b0b0; font-size:15px; line-height:1; }
           .to-exp-x:hover { color:#555; }
+          /* Action bar of the export modal — holds the Copy button, right-aligned by
+             .to-exp-spacer. (The view tabs that used to live here are gone.) */
           .to-exp-tabs { display:flex; align-items:center; gap:6px; padding:9px 15px; border-bottom:1px solid #f0f0f0; flex-shrink:0; }
-          .to-exp-tabs .to-tab { flex:0 0 auto; min-width:74px; border:1px solid #ddd; background:#fff; color:#666; }
-          .to-exp-tabs .to-tab:hover { background:#f2f2f2; }
-          .to-exp-tabs .to-tab.on { background:#16a085; border-color:#16a085; color:#fff; }
           .to-exp-spacer { flex:1 1 auto; }
           .to-exp-btn { font-size:11px; padding:5px 10px; border-radius:4px; border:1px solid #ddd; background:#fff; color:#444; cursor:pointer; }
           .to-exp-btn:hover { background:#f2f2f2; }
@@ -581,11 +584,13 @@
                 // result is nearly always a data gap (one-way scores) or the division
                 // constraint, not "the org is already optimal".
                 const skipped = [];
-                if (r.tally.oneway)   skipped.push(`${r.tally.oneway} scored one way only`);
+                // Kept terse on purpose: this line is the widest thing in the panel, and
+                // spelled out in full it wraps to four lines and dominates the box.
+                if (r.tally.oneway)   skipped.push(`${r.tally.oneway} one-way score`);
                 if (r.tally.division) skipped.push(`${r.tally.division} cross-division`);
-                if (r.tally.level)    skipped.push(`${r.tally.level} more than ${r.maxGap} job level${r.maxGap === 1 ? '' : 's'} apart`);
-                if (r.tally.noMatrix) skipped.push(`${r.tally.noMatrix} never assessed for another role`);
-                if (r.tally.unscored) skipped.push(`${r.tally.unscored} no fit in current role`);
+                if (r.tally.level)    skipped.push(`${r.tally.level} over ${r.maxGap} level${r.maxGap === 1 ? '' : 's'} apart`);
+                if (r.tally.noMatrix) skipped.push(`${r.tally.noMatrix} unassessed`);
+                if (r.tally.unscored) skipped.push(`${r.tally.unscored} no current fit`);
                 return `
                   <div class="to-opt-block">
                     <div class="to-opt-title">⚡ Auto-optimizer</div>
@@ -596,14 +601,14 @@
                       <div class="to-summary-row"><span class="to-summary-label">Passes</span><span class="to-summary-value">${r.rounds}</span></div>` : ''}
                     ${r.startedFrom ? `<div class="to-opt-note">Built on the ${r.startedFrom} placement${r.startedFrom === 1 ? '' : 's'} already in the plan.</div>` : ''}
                     ${!r.moves ? `<div class="to-opt-note">No legal swap improves the org from here${r.tally.pairs ? ` — ${r.tally.pairs} pair${r.tally.pairs === 1 ? '' : 's'} examined` : ''}.</div>` : ''}
-                    ${skipped.length ? `<div class="to-opt-note">Rejected: ${skipped.join(' · ')}.${r.divOnly && r.tally.division ? ' Untick below to allow cross-division moves.' : ''}</div>` : ''}
-                    ${r.unlevelled ? `<div class="to-opt-note" style="color:#e67e22;">${r.unlevelled} of these swap${r.unlevelled === 1 ? ' was' : 's were'} not seniority-checked — no job level on one of the roles. Add <b>job_level</b> to the tile query.</div>` : ''}
+                    ${skipped.length ? `<div class="to-opt-note">Rejected: ${skipped.join(' · ')}.${r.divOnly && r.tally.division ? ' Untick below for cross-division.' : ''}</div>` : ''}
+                    ${r.unlevelled ? `<div class="to-opt-note" style="color:#e67e22;">${r.unlevelled} swap${r.unlevelled === 1 ? '' : 's'} not seniority-checked — no job level. Add <b>job_level</b> to the query.</div>` : ''}
                     ${r.capped ? `<div class="to-opt-note" style="color:#e67e22;">Stopped at the safety cap — run it again to continue.</div>` : ''}
                   </div>` ;
               })()}
               <label class="to-sum-chk"><input type="checkbox" id="to-sum-div" ${this._divFilter ? 'checked' : ''}> Same-division moves only</label>
               <button class="to-exp-open" id="to-fit-export" ${placements ? '' : 'disabled'}>📋 Export move plan${placements ? '' : ' (no moves yet)'}</button>
-              <div class="to-summary-section" style="color:#888;font-size:10px;">Click a role to see who fits it best, then place someone to raise the average. Reset clears all placements.</div>`;
+              <div class="to-summary-section" style="color:#888;font-size:12px;">Click a role to see who fits it best.</div>`;
             const expBtn = document.getElementById('to-fit-export');
             if (expBtn) expBtn.onclick = () => showExport();
             const sumDiv = document.getElementById('to-sum-div');
@@ -672,7 +677,7 @@
               <div class="to-summary-dot-row"><span class="to-summary-label">External hires</span><span class="to-summary-value">${newHireCount}</span></div>
               <div class="to-summary-dot-row"><span class="to-summary-label">Manager gaps</span><span class="to-summary-value">${gaps}</span></div>
             </div>
-            <div class="to-summary-section" style="color:#888;font-size:10px;">Simulate a departure, then click a successor to backfill the role.</div>`;
+            <div class="to-summary-section" style="color:#888;font-size:12px;">Simulate a departure, then click a successor to backfill the role.</div>`;
         };
 
         // ── Build tree ─────────────────────────────────────────────
@@ -1604,123 +1609,63 @@
           return lines.join('\n');
         };
 
-        const planToCSV = () => {
-          const q = v => {
-            const s = v == null ? '' : String(v);
-            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-          };
-          const head = ['group', 'group_type', 'step', 'employee', 'from_role', 'from_division',
-                        'to_role', 'to_division', 'cross_division', 'to_role_mission_critical',
-                        'assessed_for_target_role',
-                        'fit_before', 'fit_after', 'fit_delta', 'band_before', 'band_after'];
-          const rows = planSteps().map(s => [
-            s.group, s.groupType, s.step, s.employee, s.fromRole, s.fromDiv,
-            s.toRole, s.toDiv, s.crossDiv ? 'yes' : 'no', s.toMcp ? 'yes' : 'no',
-            s.fitAfter == null ? 'NO' : 'yes',
-            s.fitBefore == null ? '' : s.fitBefore,
-            s.fitAfter  == null ? '' : s.fitAfter,
-            (s.fitBefore != null && s.fitAfter != null) ? Math.round(s.fitAfter - s.fitBefore) : '',
-            s.bandBefore, s.bandAfter
-          ].map(q).join(','));
-          return [head.join(','), ...rows].join('\n');
-        };
-
-        // Export modal. Downloads and clipboard can both be blocked inside Looker's
-        // sandboxed iframe, so the text is always shown in a selectable textarea as the
-        // guaranteed fallback.
+        // Export modal. Clipboard access can be blocked inside Looker's sandboxed iframe,
+        // so the plan is always shown in a selectable textarea as the guaranteed fallback.
+        // One view, one action: the sandbox makes downloads unreliable, and a CSV of a
+        // cycle-grouped plan was worse than the readable summary in every case.
         const showExport = () => {
           const el = document.getElementById('to-export');
           if (!el) return;
           const steps = planSteps();
           if (!steps.length) return;
-          let view = 'text';
 
-          const paint = () => {
-            const body = view === 'csv' ? planToCSV() : planToText();
-            el.innerHTML = `
-              <div class="to-exp-card">
-                <div class="to-exp-head">
-                  <span>Role fit optimization plan — ${steps.length} move${steps.length === 1 ? '' : 's'}</span>
-                  <span class="to-exp-x" data-x="1">✕</span>
-                </div>
-                <div class="to-exp-tabs">
-                  <button class="to-tab ${view === 'text' ? 'on' : ''}" data-v="text">Summary</button>
-                  <button class="to-tab ${view === 'csv' ? 'on' : ''}" data-v="csv">CSV</button>
-                  <span class="to-exp-spacer"></span>
-                  <button class="to-exp-btn primary" data-act="copy">Copy</button>
-                  <button class="to-exp-btn" data-act="dl">Download ${view === 'csv' ? '.csv' : '.txt'}</button>
-                </div>
-                <textarea class="to-exp-text" spellcheck="false" readonly>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea>
-                <div class="to-exp-foot">Copy is the most reliable route — Looker sandboxes this panel, so downloads may be blocked. If the buttons do nothing: click the text, then Ctrl/Cmd+A, Ctrl/Cmd+C. For CSV, paste into a blank sheet and use Data → Split text to columns.</div>
-              </div>`;
+          const body = planToText();
+          el.innerHTML = `
+            <div class="to-exp-card">
+              <div class="to-exp-head">
+                <span>Role fit optimization plan — ${steps.length} move${steps.length === 1 ? '' : 's'}</span>
+                <span class="to-exp-x" data-x="1">✕</span>
+              </div>
+              <div class="to-exp-tabs">
+                <span class="to-exp-spacer"></span>
+                <button class="to-exp-btn primary" data-act="copy">Copy</button>
+              </div>
+              <textarea class="to-exp-text" spellcheck="false" readonly>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea>
+              <div class="to-exp-foot">If Copy does nothing, Looker's sandbox has blocked clipboard access — click the text, then Ctrl/Cmd+A, Ctrl/Cmd+C.</div>
+            </div>`;
 
-            el.querySelector('[data-x]').onclick = () => { el.classList.remove('visible'); el.innerHTML = ''; };
-            el.querySelectorAll('[data-v]').forEach(b => { b.onclick = () => { view = b.getAttribute('data-v'); paint(); }; });
+          el.querySelector('[data-x]').onclick = () => { el.classList.remove('visible'); el.innerHTML = ''; };
 
-            const ta = el.querySelector('.to-exp-text');
+          const ta = el.querySelector('.to-exp-text');
 
-            // Copy: execCommand FIRST because it is synchronous and therefore still
-            // inside the user gesture. (navigator.clipboard is async — by the time its
-            // promise rejects the gesture is gone and an execCommand fallback would fail.
-            // It also needs a secure context + clipboard-write permission, which the
-            // Looker viz iframe often lacks.)
-            el.querySelector('[data-act="copy"]').onclick = ev => {
-              const btn  = ev.currentTarget;
-              const done = ok => {
-                btn.textContent = ok ? 'Copied ✓' : 'Press Ctrl/Cmd+C';
-                setTimeout(() => { btn.textContent = 'Copy'; }, 2200);
-              };
-              let ok = false;
-              try {
-                ta.removeAttribute('readonly');
-                ta.focus();
-                ta.select();
-                ta.setSelectionRange(0, ta.value.length);
-                ok = !!document.execCommand('copy');
-              } catch (e) { ok = false; }
-              ta.setAttribute('readonly', 'readonly');
-              if (ok) { done(true); return; }
-              if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(ta.value).then(() => done(true), () => done(false));
-              } else {
-                done(false);   // text stays selected, so Ctrl/Cmd+C works
-              }
+          // Copy: execCommand FIRST because it is synchronous and therefore still inside
+          // the user gesture. (navigator.clipboard is async — by the time its promise
+          // rejects the gesture is gone and an execCommand fallback would fail. It also
+          // needs a secure context + clipboard-write permission, which the Looker viz
+          // iframe often lacks.)
+          el.querySelector('[data-act="copy"]').onclick = ev => {
+            const btn  = ev.currentTarget;
+            const done = ok => {
+              btn.textContent = ok ? 'Copied ✓' : 'Press Ctrl/Cmd+C';
+              setTimeout(() => { btn.textContent = 'Copy'; }, 2200);
             };
-
-            // Download: use a data: URI, NOT a blob. blob: URLs are scoped to the
-            // creating origin, and this iframe is sandboxed with an opaque origin — when
-            // the download is blocked the browser navigates to the blob instead and the
-            // new context cannot read it, which renders as a blank page.
-            el.querySelector('[data-act="dl"]').onclick = ev => {
-              const btn   = ev.currentTarget;
-              const isCsv = view === 'csv';
-              const label = () => `Download ${view === 'csv' ? '.csv' : '.txt'}`;
-              const fail  = () => {
-                btn.textContent = 'Blocked here — use Copy';
-                setTimeout(() => { btn.textContent = label(); }, 2600);
-              };
-              try {
-                const text = isCsv ? planToCSV() : planToText();
-                const href = `data:${isCsv ? 'text/csv' : 'text/plain'};charset=utf-8,${encodeURIComponent(text)}`;
-                const a    = document.createElement('a');
-                a.href     = href;
-                a.download = `role-fit-plan-${new Date().toISOString().slice(0, 10)}.${isCsv ? 'csv' : 'txt'}`;
-                a.rel      = 'noopener';
-                a.style.display = 'none';
-                // Anchor must live in the same document as the click for the download
-                // attribute to be honoured; keep it inside the viz element.
-                el.appendChild(a);
-                a.click();
-                setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 0);
-                // Whether the sandbox actually permitted the download can't be detected,
-                // so prompt rather than claim success.
-                btn.textContent = 'Check downloads…';
-                setTimeout(() => { btn.textContent = label(); }, 2600);
-              } catch (e) { fail(); }
-            };
+            let ok = false;
+            try {
+              ta.removeAttribute('readonly');
+              ta.focus();
+              ta.select();
+              ta.setSelectionRange(0, ta.value.length);
+              ok = !!document.execCommand('copy');
+            } catch (e) { ok = false; }
+            ta.setAttribute('readonly', 'readonly');
+            if (ok) { done(true); return; }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(ta.value).then(() => done(true), () => done(false));
+            } else {
+              done(false);   // text stays selected, so Ctrl/Cmd+C works
+            }
           };
 
-          paint();
           el.classList.add('visible');
         };
 
