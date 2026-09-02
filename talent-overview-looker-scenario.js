@@ -110,16 +110,26 @@
           .to-opt-block { margin-top:5px; padding-top:4px; border-top:1px solid #eee; }
           .to-opt-title { font-weight:600; color:#8e44ad; margin-bottom:2px; }
           .to-opt-note { font-size:12px; color:#999; line-height:1.3; margin-top:3px; }
-          .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; }
-          .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; }
+          /* flex-shrink:0 is what stops the chip itself being eaten by the ellipsis — it
+             is a fixed, short label, so the variable-length name beside it should absorb
+             all of the truncation. */
+          .to-fit-cur { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#16a085; border:1px solid #16a085; border-radius:10px; padding:1px 6px; margin-left:6px; flex-shrink:0; white-space:nowrap; }
+          .to-fit-here { font-size:9px; font-weight:700; letter-spacing:0.3px; color:#3f8cff; border:1px solid #3f8cff; border-radius:10px; padding:1px 6px; margin-left:6px; flex-shrink:0; white-space:nowrap; }
           .to-tabs { display:flex; gap:4px; margin-top:8px; }
           .to-tab { flex:1 1 0; font-size:11px; padding:4px 6px; border-radius:4px; cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:rgba(255,255,255,0.06); color:rgba(255,255,255,0.75); }
           .to-tab:hover { background:rgba(255,255,255,0.16); }
           .to-tab.on { background:#16a085; border-color:#16a085; color:#fff; font-weight:600; }
           .to-fit-scroll { max-height:236px; overflow-y:auto; }
           .to-rec-body { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
-          .to-rec-nm { font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          /* Row of [name][chip]: the ellipsis lives on the inner text span, not on this
+             container, so a chip can never be half-cut. */
+          .to-rec-nm { font-size:12px; color:#fff; display:flex; align-items:center; min-width:0; }
+          .to-rec-nmtext { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-rec-sub { font-size:10px; color:rgba(255,255,255,0.45); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          /* The incumbent's row carries no "IN ROLE" chip — the blue row tint and this
+             line already say it twice over — so this line takes on the chip's blue and
+             acts as the state marker, leaving the whole name line for the name. */
+          .to-rec-sub.here { color:#3f8cff; font-weight:600; }
           .to-rec-delta { font-size:10px; font-weight:700; color:rgba(255,255,255,0.5); }
           .to-rec-delta.up { color:#2ecc71; }
           .to-rec-delta.down { color:#e74c3c; }
@@ -151,7 +161,7 @@
           .to-exp-btn.primary:hover { background:#12876f; }
           .to-exp-text { flex:1 1 auto; min-height:230px; border:none; outline:none; resize:none; padding:13px 15px; font-family:Menlo,Consolas,'Courier New',monospace; font-size:11px; line-height:1.5; color:#333; white-space:pre; overflow:auto; }
           .to-exp-foot { padding:8px 15px; border-top:1px solid #f0f0f0; font-size:10px; color:#999; flex-shrink:0; }
-          .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:230px; max-width:270px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
+          .to-action { position:fixed; background:#262D33; border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.35); padding:12px 14px; min-width:260px; max-width:330px; font-size:12px; font-family:Roboto,'Noto Sans',Helvetica,Arial,sans-serif; z-index:1001; opacity:0; pointer-events:none; transition:opacity 0.12s ease; color:#fff; }
           .to-action.visible { opacity:1; pointer-events:auto; }
           .to-act-btn { font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:#fff; cursor:pointer; }
           .to-act-btn:hover { background:rgba(255,255,255,0.2); }
@@ -165,7 +175,7 @@
           .to-rec-item:last-child { border-bottom:none; }
           .to-rec-rank { width:16px; height:16px; border-radius:50%; background:rgba(255,255,255,0.15); color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
           .to-rec-av { width:22px; height:22px; border-radius:50%; background:rgba(255,255,255,0.12); color:#fff; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; }
-          .to-rec-name { flex:1 1 auto; font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .to-rec-name { flex:1 1 auto; min-width:0; font-size:12px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .to-rec-score { display:flex; align-items:center; gap:6px; flex-shrink:0; }
           .to-rec-score b { font-size:11px; color:#fff; }
           .to-rec-pick { cursor:pointer; border-radius:4px; padding-left:3px; padding-right:3px; transition:background 0.12s ease; }
@@ -1825,8 +1835,11 @@
                 <div class="to-rec-item to-rec-pick" data-pick-person="${esc(c.homeRoleId)}" style="${here ? 'background:rgba(63,140,255,0.16);' : ''}">
                   <span class="to-rec-av" style="background:${color}">${ci}</span>
                   <span class="to-rec-body">
-                    <span class="to-rec-nm">${c.name || '—'}${here ? '<span class="to-fit-here">IN ROLE</span>' : (moved ? '<span class="to-fit-cur">MOVED</span>' : '')}</span>
-                    <span class="to-rec-sub" title="${esc(seatName)}">${seatName}</span>
+                    <span class="to-rec-nm">
+                      <span class="to-rec-nmtext" title="${esc(c.name)}">${c.name || '—'}</span>
+                      ${moved && !here ? '<span class="to-fit-cur">MOVED</span>' : ''}
+                    </span>
+                    <span class="to-rec-sub${here ? ' here' : ''}" title="${esc(seatName)}">${seatName}</span>
                   </span>
                   <span class="to-rec-score">
                     ${dlt != null && !here ? `<span class="to-rec-delta ${dlt > 0 ? 'up' : (dlt < 0 ? 'down' : '')}">${dlt > 0 ? '+' : ''}${dlt}</span>` : ''}
@@ -1860,7 +1873,7 @@
               return `
                 <div class="to-rec-item to-rec-pick" data-pick-role="${esc(rid)}" style="${isAt ? 'background:rgba(63,140,255,0.16);' : ''}">
                   <span class="to-rec-av" style="background:${color}">${(r.talent_role_name || '?').slice(0, 1).toUpperCase()}</span>
-                  <span class="to-rec-name" title="${esc(r.talent_role_name)}">${r.talent_role_name || '—'}${chip}</span>
+                  <span class="to-rec-name" title="${esc(r.talent_role_name)}">${r.talent_role_name || '—'}</span>${chip}
                   <span class="to-rec-score">
                     <span class="to-score-wrap" style="width:44px;display:inline-block;"><span class="to-score-bar" style="width:${pct}%;background:${color};display:block;"></span></span>
                     <b>${sc != null ? sc : '—'}</b>
@@ -1940,7 +1953,9 @@
           self._fitRerender = render;   // lets the summary's division toggle refresh this popover
           render();
 
-          const pad = 12, aw = 252, ah = self._action.offsetHeight || 240;
+          // Measure rather than assume: the popover has a max-width, and a hardcoded guess
+          // here would flip it to the wrong side of the cursor near the right edge.
+          const pad = 12, aw = self._action.offsetWidth || 300, ah = self._action.offsetHeight || 240;
           let left = event.clientX + pad, top = event.clientY + pad;
           if (left + aw > window.innerWidth)  left = event.clientX - aw - pad;
           if (top  + ah > window.innerHeight) top  = window.innerHeight - ah - pad;
@@ -2095,7 +2110,9 @@
 
           render();
 
-          const pad = 12, aw = 252, ah = self._action.offsetHeight || 240;
+          // Measure rather than assume: the popover has a max-width, and a hardcoded guess
+          // here would flip it to the wrong side of the cursor near the right edge.
+          const pad = 12, aw = self._action.offsetWidth || 300, ah = self._action.offsetHeight || 240;
           let left = event.clientX + pad, top = event.clientY + pad;
           if (left + aw > window.innerWidth) left = event.clientX - aw - pad;
           if (top + ah > window.innerHeight) top = window.innerHeight - ah - pad;
