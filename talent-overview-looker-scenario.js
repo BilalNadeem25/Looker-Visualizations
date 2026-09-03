@@ -477,12 +477,8 @@
           employee_name:              pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
-          // Prefer effective_division_name when the query carries it: it is division_name
-          // with division heads attributed to the division they lead, so the built-in
-          // picker, the LCA that finds a division's head, and any dashboard filter all
-          // agree on the same value. Falls back to the raw tag when the field is absent.
-          division_name:              pick(row, 'effective_division_name') ?? pick(row, 'division_name') ?? null,
-          raw_division_name:          pick(row, 'division_name') ?? null,
+          division_name:              pick(row, 'division_name') ?? null,
+          department_name:            pick(row, 'department_name') ?? null,
           // Seniority grade of this role (talent_roles.level). Only the ABSOLUTE gap
           // between two roles is used, so the client's numbering direction is irrelevant.
           job_level:                  toNum(pick(row, 'job_level')),
@@ -550,7 +546,8 @@
         if (roots.length > 1) {
           nodes.unshift({
             talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
-            employee_name: '', talent_role_name: '', parent_talent_role_name: null, division_name: null, job_level: null,
+            employee_name: '', talent_role_name: '', parent_talent_role_name: null,
+            division_name: null, department_name: null, job_level: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
             is_mission_critical_position: false, is_talent: false, role_fit_score: null,
             successor_role_fit_scores: [], candidate_role_fit_scores: [], employee_role_fits: []
@@ -846,7 +843,14 @@
         const ALL_NODES  = root.descendants();
         const childrenOf = (() => {
           const m = new Map();
-          ALL_NODES.forEach(v => m.set(String(v.data.talent_role_id), (v.children || []).map(c => c.data)));
+          ALL_NODES.forEach(v => {
+            const kids = (v.children || []).map(c => c.data);
+            m.set(String(v.data.talent_role_id), kids);
+            // Stash the TRUE direct-report count on the data. The tooltip used to read it
+            // off the rendered node, which reports 0 once a branch is folded — the folding
+            // made an otherwise correct number lie.
+            v.data._directReports = kids.length;
+          });
           return m;
         })();
         const dataOfId = (() => {
@@ -1094,6 +1098,16 @@
         // subsidiary filter upstream.
         const externallyScoped = divisionsInData.length === 1 &&
           realNodes().every(n => (n.division_name || '').trim());
+        // A department filter narrows further; name it in the chip so the user can see at
+        // which granularity the query was scoped, not just that it was.
+        const departmentsInData = [...new Set(realNodes()
+          .map(n => (n.department_name || '').trim()).filter(Boolean))].sort();
+        const scopeLabel = () => {
+          const parts = [divisionsInData[0]];
+          if (departmentsInData.length === 1 &&
+              realNodes().every(n => (n.department_name || '').trim())) parts.push(departmentsInData[0]);
+          return parts.filter(Boolean).join(' · ');
+        };
 
         // Describe the forest from what the data actually says. Roles with no manager
         // recorded are just the top of the org — reported plainly, in the neutral style.
@@ -1150,7 +1164,7 @@
             ${crumbs}
             <span style="width:1px;height:14px;background:#e0e0e0;"></span>
             ${externallyScoped
-              ? `<span class="to-nav-tag scoped" title="This tile's Looker filter has narrowed the query to one division. The chart draws exactly the rows the query returned.">🔒 ${divisionsInData[0]} · dashboard filter</span>`
+              ? `<span class="to-nav-tag scoped" title="This tile's Looker filter has narrowed the query to a single org unit. The chart draws exactly the rows the query returned.">🔒 ${scopeLabel()} · dashboard filter</span>`
               : (config.division_picker
                   ? `<select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
                       <option value="">All divisions</option>
@@ -3029,8 +3043,13 @@
           </div>
           <div class="to-tt-row">
             <span class="to-tt-label">Direct Reports</span>
-            <span class="to-tt-value">${d.children ? d.children.length : 0}</span>
+            <span class="to-tt-value">${data._directReports != null ? data._directReports : (d.children ? d.children.length : 0)}</span>
           </div>
+          ${(data.division_name || data.department_name) ? `
+          <div class="to-tt-row">
+            <span class="to-tt-label">Org Unit</span>
+            <span class="to-tt-value">${[data.division_name, data.department_name].filter(Boolean).join(' · ')}</span>
+          </div>` : ''}
         `;
 
         this._positionTooltip(event);
