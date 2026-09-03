@@ -785,6 +785,11 @@
           var dataMax = emps.reduce(function (m, e) { return Math.max(m, e.roleFit || 0); }, 0);
           st.maxRoleFit = Math.min(72, Math.max(1, Math.ceil(dataMax)));
         }
+        // Chips survive a role change; the cards were just wiped two lines up. Reopen them, or
+        // the search box would claim five people while the panel showed none. This also covers
+        // filtering INTO a role from the idle view, where the cards could not open at the time.
+        var self0 = this;
+        st.searchIds.forEach(function (u) { self0._openCardFor(u); });
       } else {
         // keep only still-present selections and a valid chart role
         st.selectedPairs = st.selectedPairs.filter(function (pk) { return st.byPair[pk]; });
@@ -796,25 +801,19 @@
 
       this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
 
-      // simulate-mode: behaviours scoped to the charted role, plus the successor default
+      // simulate-mode: behaviours scoped to the charted role. No successor is chosen here any
+      // more — the ranked role population that used to supply a default is gone with it.
       this._buildBehaviours();
-      var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
-                                 .sort(function (a, b) { return b.roleFit - a.roleFit; });
       if (roleChanged) { st.simComplements = {}; st.simAuto = true; st.simScopeAuto = true; }
-      // In simulate mode the tag box owns the successor, so resolve the chip first; it may also
-      // write a defaulted successor back into the box.
+      // In simulate mode the tag box owns the successor, so resolve the chip first.
       var moved = this._syncSuccessor();
       // "Stale" is a focus pointing at a row that no longer exists or belongs to another role.
-      // simFocusMissing is NOT stale — it is a deliberate no-successor state (the chipped person
-      // has no assessment against this role) and must survive rather than re-default.
-      var stale = !st.simFocusMissing &&
+      // A NULL focus is never stale — it is the deliberate "no successor chosen yet" state, and
+      // re-defaulting it here would put back the automatic pick this mode no longer makes.
+      var stale = st.simFocus != null &&
                   (!st.byPair[st.simFocus] || st.byPair[st.simFocus].roleId !== st.chartRole);
+      if (stale) { st.simFocus = null; st.simFocusMissing = false; }
       if (roleChanged || moved || stale) {
-        if (stale) {
-          st.simFocus = roleEmps.length ? roleEmps[0].pk : null;
-          if (st.mode === "simulate" && st.simFocus) st.searchIds = [st.byPair[st.simFocus].userId];
-        }
-        // a defaulted successor was never the user's choice, so nothing here is theirs to keep
         st.simAuto = true; st.simScopeAuto = true;
         this._defaultWeak();
         this._autoPick();                   // walks department -> division -> directorate -> org
@@ -855,6 +854,54 @@
       st.panX = vbX - wx * nz; st.panY = vbY - wy * nz; st.zoom = nz; this._applyTransform();
     },
 
+    // Idle state — no target role is selected, so the radius cannot mean "fit to the target role"
+    // and every node parks on the 0% rim in neutral grey rather than plotting a blob of unrelated
+    // fits. Two independent signals, because each covers the other's blind spot:
+    //   - Unscored rows in the data. A role filter would have dropped them in the model, so their
+    //     presence is proof the query is unfiltered. Firmer than anything Looker reports, and it
+    //     holds even for a client with only one target role defined — which is why this signal
+    //     deliberately does NOT sit behind the `multi` gate.
+    //   - A positive "no role filter" from applied_filters, for tiles on the old model where no
+    //     unscored row can ever arrive. Gated on `multi`: a deliberate multi-role selection is NOT
+    //     idle (the roles in view are the ones the user asked for, so each node plots its own
+    //     fit), and when Looker reports nothing (null) the fit is plotted, since a
+    //     mislabelled-but-readable chart beats a rim of dots either way.
+    // Simulate mode always scopes itself to one role, so it never idles.
+    //
+    // A method rather than a local in _draw because card auto-opening has to make the same call:
+    // an idle card has no fit and no competencies to show, so there is nothing to open.
+    _isIdle: function () {
+      var st = this.state;
+      if (st.mode === "simulate") return false;
+      var hasUnscored = st.assessedCount < st.userIds.length;
+      return hasUnscored || (st.rolesInView.length > 1 && st.roleFilterApplied === false);
+    },
+
+    // ---- cards driven by the search -----------------------------------------
+    // Picking someone in the search box opens their profile card, so a search of five people is
+    // five cards rather than five names to hunt down and click on the chart.
+    //
+    // ONE card per person, not one per target role. With several roles in view a person has a
+    // bubble per role, and opening all of them would bury the panel on the first pick — so the
+    // best-fitting role opens and the card's own ＋ role button adds the others on demand.
+    _openCardFor: function (uid) {
+      var st = this.state;
+      if (st.mode === "simulate" || this._isIdle()) return;   // no card is rendered in either
+      var rows = st.employees.filter(function (e) { return e.userId === String(uid) && !e.unscored; })
+                             .sort(function (a, b) { return b.roleFit - a.roleFit; });
+      if (!rows.length) return;
+      if (st.selectedPairs.indexOf(rows[0].pk) < 0) st.selectedPairs.push(rows[0].pk);
+    },
+    // Dropping a chip also removes that person's bubbles, so leaving their card open would leave
+    // a card for somebody no longer on the chart. Cards opened by clicking other people survive.
+    _closeCardsFor: function (uid) {
+      var st = this.state;
+      st.selectedPairs = st.selectedPairs.filter(function (pk) {
+        var e = st.byPair[pk];
+        return !e || e.userId !== String(uid);
+      });
+    },
+
     // ---- successor selection -------------------------------------------------
     // Simulate has no dropdown of its own: the successor IS the tag box's selection, so there is
     // one place to look someone up in either mode. A successor is one person, so the box is
@@ -871,10 +918,9 @@
       if (st.mode !== "simulate") return false;
       var prev = st.simFocus;
       if (st.searchIds.length > 1) st.searchIds = st.searchIds.slice(0, 1);
-      var roleEmps = st.employees.filter(function (e) { return e.roleId === st.chartRole; })
-                                 .sort(function (a, b) { return b.roleFit - a.roleFit; });
       st.simFocusMissing = false;
-      if (!roleEmps.length) { st.simFocus = null; return prev !== null; }
+      // No ranking needed any more — nothing is defaulted, so the only question is whether the
+      // chipped person has a row against the charted role.
       var want = st.searchIds.length ? st.searchIds[0] + "::" + st.chartRole : null;
       if (want && st.byPair[want]) {
         st.simFocus = want;
@@ -885,8 +931,10 @@
         st.simFocus = null;
         st.simFocusMissing = true;
       } else {
-        st.simFocus = roleEmps[0].pk;
-        st.searchIds = [st.byPair[st.simFocus].userId];
+        // Nothing chipped = NO successor. Simulate opens on the whole role population with
+        // nothing chosen, so the first thing on screen is a question rather than an answer about
+        // whoever happened to score highest. The chart stays unnarrowed until someone is picked.
+        st.simFocus = null;
       }
       return st.simFocus !== prev;
     },
@@ -956,6 +1004,7 @@
       } else {
         if (st.searchIds.indexOf(uid) >= 0) return;
         st.searchIds.push(uid);
+        this._openCardFor(uid);
       }
       // Clear the query after a pick, so the next name starts from the full list rather than
       // from the leftovers of the last one.
@@ -966,12 +1015,17 @@
       var st = this.state, i = st.searchIds.indexOf(String(uid));
       if (i < 0) return;
       st.searchIds.splice(i, 1);
+      this._closeCardsFor(uid);
       this._afterTagChange();
     },
     _clearTags: function () {
-      var st = this.state;
+      var self = this, st = this.state;
       if (!st.searchIds.length) return;
+      // Close only what the chips opened. Cards for people who were never chipped were opened by
+      // clicking a bubble, and clearing a search should not throw those away.
+      var gone = st.searchIds.slice();
       st.searchIds = [];
+      gone.forEach(function (u) { self._closeCardsFor(u); });
       this._afterTagChange();
     },
     // _syncSuccessor may rewrite searchIds (it writes a defaulted successor back as the chip), so
@@ -1028,8 +1082,7 @@
       //     own fit), and when Looker reports nothing (null) the fit is plotted, since a
       //     mislabelled-but-readable chart beats a rim of dots either way.
       // Simulate mode always scopes itself to one role, so it never idles.
-      var hasUnscored = st.assessedCount < st.userIds.length;
-      var idle = !sim && (hasUnscored || (multi && st.roleFilterApplied === false));
+      var idle = this._isIdle();
       var list = (sim ? st.employees.filter(function (e) { return e.roleId === st.chartRole; }) : st.employees.slice())
                    .sort(function (a, b) { return b.roleFit - a.roleFit; });
       // Search REMOVES rather than dims. Dimming worked when a chart held tens of people, but a
@@ -1057,7 +1110,12 @@
       //
       // Complements chosen before the pool was narrowed are kept deliberately: they are part of
       // the team being modelled, so they must stay visible and removable.
-      if (sim) {
+      //
+      // Only once a successor exists, though. The pool is defined relative to THEIR org unit and
+      // seniority, so with no successor _inScope matches nobody and this would empty the chart —
+      // exactly when the user needs to see everyone in order to choose. Before a pick, simulate
+      // shows the whole role population across the organisation.
+      if (sim && st.simFocus) {
         list = list.filter(function (e) {
           return e.pk === st.simFocus || !!st.simComplements[e.pk] ||
                  (self._inScope(e, st.simScope) && self._levelOk(e));
@@ -1082,12 +1140,18 @@
       var head = (st.orgHeadcount != null && st.orgHeadcount > st.userIds.length) ? st.orgHeadcount : st.userIds.length;
       var people = ppl(head);
       var spread = list.length + " assessments · " + ppl(assessed) + " · " + st.rolesInView.length + " roles · ";
-      if (sim) {
+      if (sim && !st.simFocus) {
+        // Before a pick the chart is the whole role population, not a pool — say so, and say what
+        // to do with it, because an unfiltered chart with no panel beside it looks like a failure.
+        this.$.count.textContent = list.length + " assessed against this role · " +
+          (st.simFocusMissing ? "that employee is not assessed against it — search another"
+                              : "search a successor to begin");
+      } else if (sim) {
         var cc = this._simComplementEmps().length;
         // list is the pool now, not the workforce — "104 employees" beside 5 dots was the old
         // reading and would be flatly wrong. Report the candidates on screen, excluding the
         // successor, which is what the dots actually are.
-        var poolN = Math.max(0, list.length - (st.simFocus && st.byPair[st.simFocus] ? 1 : 0));
+        var poolN = Math.max(0, list.length - (st.byPair[st.simFocus] ? 1 : 0));
         this.$.count.textContent = poolN + " candidate" + (poolN === 1 ? "" : "s") +
           " in pool · successor + " + cc + " complement" + (cc === 1 ? "" : "s");
       } else if (!list.length) {
@@ -1143,6 +1207,9 @@
       // has been scored, and a red rim reads as "everyone is a bad fit" — a verdict the chart is
       // in no position to make.
       var idleFill = (this._config && this._config.color_unscored) || "#b6bfca";
+      // Whether the whole chart is display-only this draw. Simulate with no successor searched
+      // yet is a preview of the role population, not a control surface.
+      var inert = idle || (sim && !st.simFocus);
 
       list.forEach(function (emp, i) {
         var m = idle ? 0 : Math.max(0, Math.min(100, self._match(emp.roleFit))), r = maxR * (1 - m / 100);
@@ -1157,19 +1224,22 @@
         if (isFocus) cls += " focus";
         else if (isComp) cls += " comp";
         else if (!sim && st.selectedPairs.indexOf(emp.pk) >= 0) cls += " sel";
-        // Idle: nothing on the rim opens a card. There is no target role, so there is no fit to
-        // show and the card is a fit profile — and the unscored people plotted here have no
-        // competencies or skills to fall back on either. Dropping the affordance entirely beats
-        // opening a card that has to apologise for being empty.
-        if (idle) cls += " inert";
+        // Nothing here answers a click, in two situations:
+        //   idle — no target role, so no fit to show, and the card is a fit profile. The unscored
+        //     people plotted there have no competencies or skills to fall back on either.
+        //   simulate before a successor is searched — a complement is defined relative to a
+        //     successor, so there is nothing for a click to attach itself to yet.
+        // Dropping the affordance beats a click that silently does nothing.
+        if (inert) cls += " inert";
         var g = svgEl("g", { class: cls });
         // One opacity for everything drawn. Nothing on this chart is a second-class node now:
         // whatever is excluded — by search in compare, by the pool in simulate — is simply absent.
         g.appendChild(svgEl("circle", { cx: bx, cy: by, r: 2, fill: idle ? idleFill : self._color(m),
           "fill-opacity": 0.9, stroke: "#fff", "stroke-width": 0.5 }));
-        // Three states left in simulate, all of them on screen for a reason. The "not eligible"
-        // wordings are gone with the nodes they described.
+        // The successor comes from the search box only, so a node never offers to become one.
+        // Before a successor exists these nodes are a read-only preview of the role population.
         var simTag = !sim ? ""
+          : !st.simFocus ? " · search a successor above to start"
           : isFocus ? " · successor"
           : isComp ? " · complement — click to remove"
           : " · in the complement pool — click to add";
@@ -1181,7 +1251,7 @@
             (emp.unscored ? " · not assessed" : " · not scored against a selected role")
           : emp.name + " — " + emp.roleName + " · " + Math.round(emp.roleFit) + "% fit" + simTag;
         g.appendChild(ti);
-        if (!idle) g.addEventListener("click", function () {
+        if (!inert) g.addEventListener("click", function () {
           if (st.dragMoved) return;
           if (st.mode === "simulate") { self._toggleComplement(emp.pk); self._draw(); }
           else { self._togglePair(emp.pk); self._draw(); }
@@ -1650,7 +1720,9 @@
       var self = this, st = this.state, panel = this.$.panel;
       var f = this._simFocusEmp();
       if (!f || !st.behaviours.length) {
-        this.$.scope.innerHTML = "";
+        // A pool is scoped to the successor's org unit, so there is nothing to offer yet. An
+        // empty <select> reads as broken, so say why it is empty.
+        this.$.scope.innerHTML = '<option value="">Pick a successor first</option>';
         // Two very different causes, and the old single message blamed the model for both. A
         // chipped person who is simply not assessed against this role is a one-click fix, not a
         // missing field.
@@ -1659,11 +1731,20 @@
           who = (st.people.filter(function (p) { return p.userId === st.searchIds[0]; })[0] || {}).name;
         }
         var roleNm = (st.rolesInView.filter(function (r) { return r.id === st.chartRole; })[0] || {}).name;
-        panel.innerHTML = '<div class="nx-empty"><p>' + (who
-          ? esc(who) + ' has no assessment against ' + (roleNm ? '<b>' + esc(roleNm) + '</b>' : 'the charted role') +
-            ', so there is nothing to simulate. Search someone who is assessed against it.'
-          : 'No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.') +
-          '</p></div>';
+        // Three causes now, and they need three different answers. Nothing chosen yet is the
+        // ordinary opening state, not a fault, so it reads as an instruction rather than an error.
+        var msg;
+        if (who) {
+          msg = esc(who) + ' has no assessment against ' + (roleNm ? '<b>' + esc(roleNm) + '</b>' : 'the charted role') +
+                ', so there is nothing to simulate. Search someone who is assessed against it.';
+        } else if (!st.behaviours.length) {
+          msg = 'No behaviour data for this role. Simulate mode needs the subcompetencies field, filtered to a single target role.';
+        } else {
+          msg = 'Search a successor in the box above to model them. The chart below shows everyone ' +
+                'assessed against this role; once a successor is chosen it narrows to the ' +
+                'candidates who could complement them.';
+        }
+        panel.innerHTML = '<div class="nx-empty"><p>' + msg + '</p></div>';
         return;
       }
       var stats = this._scopeStats();
