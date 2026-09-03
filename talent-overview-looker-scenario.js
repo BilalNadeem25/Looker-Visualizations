@@ -160,6 +160,7 @@
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
           .to-btn.lens-on { background:#2c3e50; color:#fff; border-color:#2c3e50; }
+          .to-chord { fill:none; stroke:#16a085; stroke-width:1.6; stroke-opacity:0.8; stroke-linecap:round; pointer-events:none; }
           .to-btn.auto { border-color:#8e44ad; color:#8e44ad; font-weight:600; }
           .to-btn.auto:hover:not(:disabled) { background:#f6eefb; }
           .to-opt-block { margin-top:5px; padding-top:4px; border-top:1px solid #eee; }
@@ -308,6 +309,7 @@
           <span style="font-size:11px;color:#888;">Only:</span>
           <button class="to-btn" id="to-btn-mcp" title="Show only mission-critical positions, keeping the managers above them so the tree stays connected">MCP</button>
           <button class="to-btn" id="to-btn-talent" title="Show only critical talents, keeping the managers above them so the tree stays connected">Critical Talent</button>
+          <button class="to-btn" id="to-btn-moves" title="Show only the roles this plan moves, so they are not lost among everything else" style="display:none;">Moves</button>
         `;
         element.appendChild(toggle);
 
@@ -410,6 +412,7 @@
         this._divLines     = 0;           // in filter mode, how many reporting lines it spans
         this._onlyMcp      = false;       // lens: mission-critical positions only
         this._onlyTalent   = false;       // lens: critical talents only
+        this._onlyMoves    = false;       // lens: only roles the plan actually moves
         // Result of the last Auto-Optimize run (null once the plan is edited by hand).
         this._optReport    = null;
         this._gapIdx       = 0;
@@ -654,6 +657,16 @@
 
         const renderSummary = () => {
           const rn = realNodes();
+          // The Moves lens only means anything once a plan exists, so the button appears
+          // with the first placement and leaves with the last. This lives here because
+          // renderSummary is the one function every placement change routes through —
+          // Auto-Optimize, a hand-made move, an undo, and Reset all call it.
+          // Visibility only. Clearing the lens itself belongs to afterPlacementChange and
+          // the fit-mode toggle, which also drop the button's active class and redraw —
+          // doing it here as well just disarmed the flag behind their backs, so they saw
+          // nothing to clean up and left the view filtered to an empty set.
+          const movesBtn = document.getElementById('to-btn-moves');
+          if (movesBtn) movesBtn.style.display = (this._fitMode && rn.some(n => n._placedUser)) ? '' : 'none';
           const ohiGroups = { High: 0, Medium: 0, Low: 0, 'N/A': 0 };
           rn.forEach(n => { const o = n.org_health_index || 'N/A'; if (o in ohiGroups) ohiGroups[o]++; else ohiGroups['N/A']++; });
           const benchOf = key => {
@@ -925,11 +938,14 @@
         // is_talent a property of its holder, which makes the intersection a real question
         // rather than a coincidence.
         const divFilterOn = () => self._divMode === 'filter' && !!normUnit(self._divView);
-        const lensOn      = () => self._onlyMcp || self._onlyTalent || divFilterOn();
+        const lensOn      = () => self._onlyMcp || self._onlyTalent || self._onlyMoves || divFilterOn();
         const matchesLens = d => {
           if (!d || d.talent_role_id === '__root__') return false;
           if (self._onlyMcp    && !isTruthy(d.is_mission_critical_position)) return false;
           if (self._onlyTalent && !isTruthy(d.is_talent)) return false;
+          // A swap marks BOTH seats it touches, and a rotation marks all of them, so this
+          // catches every end of every move rather than only the destinations.
+          if (self._onlyMoves  && !d._placedUser) return false;
           if (divFilterOn()    && normUnit(d.division_name) !== normUnit(self._divView)) return false;
           return true;
         };
@@ -1183,7 +1199,8 @@
               // as a bug. Expand all lifts the rest into view.
               const hit  = viewRoot ? viewRoot.descendants().filter(v => !v._connect && v.data.talent_role_id !== '__root__').length : 0;
               const all  = lensMatchCount();
-              const name = [self._onlyMcp ? 'MCP' : '', self._onlyTalent ? 'critical talent' : ''].filter(Boolean).join(' + ') || 'filtered';
+              const name = [self._onlyMcp ? 'MCP' : '', self._onlyTalent ? 'critical talent' : '',
+                            self._onlyMoves ? 'moves' : ''].filter(Boolean).join(' + ') || 'filtered';
               return `<span class="to-nav-tag" title="${escAttr(
                 `${all} role(s) in the organisation match this filter; ${hit} of them fit in the current view — use Expand all to reach the rest. ` +
                 `The paler roles are the managers above the matches, kept so the tree stays connected; they are not matches themselves.`
@@ -1247,7 +1264,39 @@
         let linkPaths = g.append('g').attr('fill', 'none').attr('stroke-width', 1).selectAll('path');
         let nodeG     = g.append('g').selectAll('g');
         let ringG     = g.append('g');
+        let chordG    = g.append('g');
         let labelG    = g.append('g').attr('class', 'to-labels');
+
+        // ── Move chords ──
+        // One curve per person the plan relocates, from the seat they hold today to the seat
+        // they would take. Without it a swap is two independently recoloured dots and the
+        // pairing has to be inferred — impossible to do by eye in a rotation, where three or
+        // more seats change hands at once. The curve bows toward the centre (edge-bundling
+        // style) so it reads as a move across the org, not as another reporting line.
+        //
+        // Kept out of drawTree so it can be refreshed on its own: placements change far more
+        // often than the tree does (every optimizer run, hand-made move and undo), and none
+        // of those paths redraw the tree — they repaint it.
+        const drawChords = () => {
+          if (!chordG) return;
+          if (!self._fitMode || !self._fitAssign.size) { chordG.selectAll('path').remove(); return; }
+          const arcs = [], seen = new Set();
+          self._fitAssign.forEach((personHome, seat) => {
+            const from = viewById(personHome), to = viewById(seat);
+            if (!from || !to || from === to) return;      // an end is folded away: nothing to join
+            // A two-person swap produces both A→B and B→A, which are the same curve drawn
+            // twice. Keep one per pair. A longer rotation has no repeated pair, so every
+            // leg of it survives.
+            const a = idOf(from), b = idOf(to);
+            const key = a < b ? a + '|' + b : b + '|' + a;
+            if (seen.has(key)) return;
+            seen.add(key);
+            const [x1, y1] = nodePos(from), [x2, y2] = nodePos(to);
+            arcs.push(`M${x1},${y1}Q${(x1 + x2) / 2 * 0.35},${(y1 + y2) / 2 * 0.35} ${x2},${y2}`);
+          });
+          chordG.selectAll('path').data(arcs).join('path')
+            .attr('class', 'to-chord').attr('d', d => d);
+        };
         const nodeRadius  = d => d._folded ? Math.min(11, 6 + Math.log2((d._hidden ? d._hidden.count : 1) + 1))
                                : (d.depth === 0 ? 9 : d.children ? 6 : 5);
         const bandArc = d3.arc();
@@ -1257,6 +1306,7 @@
           g.selectAll('*').remove();
           ringG     = g.append('g');
           const lg  = g.append('g').attr('fill', 'none').attr('stroke-width', 1);
+          const cg  = g.append('g');   // move chords: above the reporting lines, below the nodes
           const ng  = g.append('g');
 
           const treeLayout = d3.tree()
@@ -1275,6 +1325,9 @@
           linkPaths = lg.selectAll('path').data(viewRoot.links()).join('path')
             .attr('stroke', '#ccc')
             .attr('d', d3.linkRadial().angle(d => d.x).radius(d => d.y));
+
+          chordG = cg;
+          drawChords();
 
           nodeG = ng.selectAll('g').data(viewRoot.descendants()).join('g')
             .attr('class', 'to-node')
@@ -1464,6 +1517,7 @@
         const btnAuto     = document.getElementById('to-btn-auto');
         const btnMcp      = document.getElementById('to-btn-mcp');
         const btnTalent   = document.getElementById('to-btn-talent');
+        const btnMoves    = document.getElementById('to-btn-moves');
         const btnReset    = document.getElementById('to-btn-reset');
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
@@ -1496,6 +1550,7 @@
         };
 
         const clearScenarioPaint = () => {
+          drawChords();                                         // drops the chords on leaving fit mode
           nodeG.style('opacity', d => d._connect ? 0.35 : 1);   // keep lens connectors faint
           linkPaths.attr('stroke', '#ccc').attr('stroke-opacity', 1);
           nodeG.selectAll('circle:not(.to-node-circle)')
@@ -1909,6 +1964,7 @@
         syncPlacements();   // rehydrate placements after a Looker re-render
 
         const paintFit = () => {
+          drawChords();                                         // placements may have just changed
           nodeG.style('opacity', d => d._connect ? 0.35 : 1);   // keep lens connectors faint
           linkPaths.attr('stroke', '#ccc').attr('stroke-opacity', 1);
           nodeG.selectAll('circle:not(.to-node-circle)')
@@ -2410,12 +2466,25 @@
               restoreSeat(seatId);
               self._optReport = null;              // a hand edit invalidates its before/after
               self._action.classList.remove('visible');   // popover would now be stale
-              paintFit();
-              renderSummary();
-              renderFitPanel();
+              afterPlacementChange();
               if (v) flyToNodes([v], { ping: [v] });
             };
           });
+        };
+
+        // Every path that changes a placement funnels through here. The Moves lens FILTERS
+        // on placements, so a change invalidates which nodes belong in the view, not merely
+        // how they are painted — repainting alone would leave the lens showing the previous
+        // set (and, after the last undo, an empty chart with no button left to escape it).
+        const afterPlacementChange = () => {
+          const emptied = self._onlyMoves && !realNodes().some(n => n._placedUser);
+          if (emptied) {
+            self._onlyMoves = false;
+            const b = document.getElementById('to-btn-moves');
+            if (b) b.classList.remove('lens-on');
+          }
+          if (self._onlyMoves || emptied) redraw(false);
+          else { paintFit(); renderSummary(); renderFitPanel(); }
         };
 
         // Route the shared left-docked panel to whichever simulation is active.
@@ -2439,9 +2508,7 @@
             // A hand-made move invalidates the optimizer's report — its before/after
             // numbers no longer describe the plan on screen.
             self._optReport = null;
-            paintFit();
-            renderSummary();
-            renderFitPanel();
+            afterPlacementChange();
             rerender();
             if (flyTargets && flyTargets[1]) flyToNodes(flyTargets, { ping: [flyTargets[1]] });
           };
@@ -2818,6 +2885,11 @@
           self._hideEmployeeCard();
           self._fitMode = !self._fitMode;
           self._action.classList.remove('visible');
+          // The Moves lens only makes sense inside Optimize Fit, and its button hides on
+          // the way out — so leaving with it on would strand a filtered view with no
+          // control left to release it.
+          const droppedMoves = !self._fitMode && self._onlyMoves;
+          if (droppedMoves) { self._onlyMoves = false; btnMoves.classList.remove('lens-on'); }
           if (self._fitMode) {
             self._preColorMode = self._colorMode;
           } else if (self._preColorMode) {
@@ -2825,7 +2897,8 @@
             btnOhi.classList.toggle('active', self._colorMode !== 'bench_risk');
             btnBench.classList.toggle('active', self._colorMode === 'bench_risk');
           }
-          applyActiveMode();
+          if (droppedMoves) redraw(false);   // the view was filtered on placements
+          else applyActiveMode();
         };
 
         // Run the whole optimization in one click. The search is synchronous, so the
@@ -2837,6 +2910,7 @@
         const applyLens = () => {
           btnMcp.classList.toggle('lens-on', self._onlyMcp);
           btnTalent.classList.toggle('lens-on', self._onlyTalent);
+          btnMoves.classList.toggle('lens-on', self._onlyMoves);
           self._hideEmployeeCard();
           self._action.classList.remove('visible');
           self._focusId = null;        // a focus chosen under the old lens may not survive it
@@ -2846,6 +2920,7 @@
         };
         btnMcp.onclick = () => { self._onlyMcp = !self._onlyMcp; applyLens(); };
         btnTalent.onclick = () => { self._onlyTalent = !self._onlyTalent; applyLens(); };
+        btnMoves.onclick = () => { self._onlyMoves = !self._onlyMoves; applyLens(); };
 
         btnAuto.onclick = () => {
           if (!self._fitMode || btnAuto.disabled) return;
@@ -2864,9 +2939,7 @@
             }
             btnAuto.textContent = label;
             btnAuto.disabled = false;
-            paintFit();
-            renderSummary();
-            renderFitPanel();
+            afterPlacementChange();
           }, 20);
         };
 
@@ -2875,9 +2948,7 @@
             clearAssignment();
             self._optReport = null;
             self._action.classList.remove('visible');
-            paintFit();
-            renderSummary();
-            renderFitPanel();
+            afterPlacementChange();
             return;
           }
           self._scenario.clear();
