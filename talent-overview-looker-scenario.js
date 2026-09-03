@@ -95,6 +95,8 @@
           .to-nav-stat { color:#999; white-space:nowrap; }
           .to-nav-tag { font-size:10px; font-weight:600; border-radius:10px; padding:1px 7px; white-space:nowrap; color:#16a085; border:1px solid #16a085; }
           .to-nav-tag.warn { color:#e67e22; border-color:#e67e22; cursor:help; }
+          .to-nav-tag.scoped { color:#3498db; border-color:#3498db; cursor:help; }
+          .to-synthetic-label { font-size:9px; fill:#aab2ba; }
           .to-nav-btn { font-size:11px; padding:2px 7px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
           .to-nav-btn:hover { background:#f0f0f0; }
           .to-bundle-label { font-size:9px; font-weight:700; fill:#5a6672; cursor:pointer; }
@@ -461,7 +463,12 @@
           employee_name:              pick(row, 'employee_name') ?? pick(row, 'name') ?? '—',
           talent_role_name:           pick(row, 'talent_role_name') ?? pick(row, 'role_name') ?? '—',
           parent_talent_role_name:    pick(row, 'parent_talent_role_name') ?? null,
-          division_name:              pick(row, 'division_name') ?? null,
+          // Prefer effective_division_name when the query carries it: it is division_name
+          // with division heads attributed to the division they lead, so the built-in
+          // picker, the LCA that finds a division's head, and any dashboard filter all
+          // agree on the same value. Falls back to the raw tag when the field is absent.
+          division_name:              pick(row, 'effective_division_name') ?? pick(row, 'division_name') ?? null,
+          raw_division_name:          pick(row, 'division_name') ?? null,
           // Seniority grade of this role (talent_roles.level). Only the ABSOLUTE gap
           // between two roles is used, so the client's numbering direction is irrelevant.
           job_level:                  toNum(pick(row, 'job_level')),
@@ -508,6 +515,14 @@
           }
         });
         const roots = nodes.filter(n => !n.parent_talent_role_id);
+        // How many top-level roles the query actually returned. When a Looker filter scopes
+        // the tile (by division, subsidiary, anything), the ancestors of the surviving roles
+        // are usually filtered out with everything else, so the result arrives as a FOREST
+        // rather than a tree. The synthetic root below keeps stratify working, but the user
+        // needs to be told that is what they are looking at — otherwise it renders as an
+        // unexplained grey hub in the middle of the chart.
+        const rootCount   = roots.length;
+        const forestQuery = rootCount > 1;
         if (roots.length > 1) {
           nodes.unshift({
             talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
@@ -1028,20 +1043,32 @@
         // that needs none of it, so the 74-role case looks exactly as it did before.
         const divisionsInData = [...new Set(realNodes()
           .map(n => (n.division_name || '').trim()).filter(Boolean))].sort();
+        // When the tile's own Looker filter has already narrowed the query to a single
+        // division, the built-in dropdown is redundant — its only option is the division
+        // you are already looking at. Showing both invites the user to think two filters
+        // are fighting. So the control stands down to a label and the Looker filter is
+        // treated as the source of truth, which is also what lets it compose with a
+        // subsidiary filter upstream.
+        const externallyScoped = divisionsInData.length === 1 &&
+          realNodes().every(n => (n.division_name || '').trim());
 
         const renderNav = () => {
           const el = document.getElementById('to-nav');
           if (!el) return;
-          const drawn  = viewRoot ? viewRoot.descendants().length : 0;
-          const total  = ALL_NODES.length;
+          // The synthetic wrapper is scaffolding, not a role — it should not inflate either
+          // side of the "x of y" count.
+          const syn    = forestQuery ? 1 : 0;
+          const drawn  = (viewRoot ? viewRoot.descendants().length : 0) - syn;
+          const total  = ALL_NODES.length - syn;
           const focusV = self._focusId ? ALL_NODES.find(v => idOf(v) === String(self._focusId)) : null;
-          const needed = self._focusId || self._divView || drawn < total;
+          const needed = self._focusId || self._divView || externallyScoped || forestQuery || drawn < total;
           if (!needed) { el.classList.add('hidden'); el.innerHTML = ''; return; }
 
           const trail = focusV ? focusV.ancestors().reverse() : [root];
           const crumbs = trail.map((v, i) => {
             const last = i === trail.length - 1;
-            const nm   = v.data.talent_role_id === '__root__' ? 'Whole organisation'
+            const nm   = v.data.talent_role_id === '__root__'
+                       ? (externallyScoped ? divisionsInData[0] : 'Whole organisation')
                        : (v.data.talent_role_name || '—');
             return `<span class="to-crumb${last ? ' here' : ''}" data-crumb="${escAttr(v.data.talent_role_id)}" title="${escAttr(nm)}">${nm}</span>`;
           }).join('<span class="to-crumb-sep">›</span>');
@@ -1049,10 +1076,15 @@
           el.innerHTML = `
             ${crumbs}
             <span style="width:1px;height:14px;background:#e0e0e0;"></span>
-            <select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
-              <option value="">All divisions</option>
-              ${divisionsInData.map(d => `<option value="${escAttr(d)}" ${normUnit(d) === normUnit(self._divView) ? 'selected' : ''}>${d}</option>`).join('')}
-            </select>
+            ${externallyScoped
+              ? `<span class="to-nav-tag scoped" title="This tile's Looker filter has already narrowed the query to one division, so the built-in division picker would have nothing to add. Clear the dashboard filter to browse the whole organisation here.">🔒 ${divisionsInData[0]} · dashboard filter</span>`
+              : `<select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
+                  <option value="">All divisions</option>
+                  ${divisionsInData.map(d => `<option value="${escAttr(d)}" ${normUnit(d) === normUnit(self._divView) ? 'selected' : ''}>${d}</option>`).join('')}
+                </select>`}
+            ${forestQuery
+              ? `<span class="to-nav-tag warn" title="The query returned ${rootCount} top-level roles. Their managers were removed by a Looker filter, so these branches have no shared parent in this data and are grouped under a placeholder. Add the parent roles to the query to see how they connect.">⚠ ${rootCount} reporting lines · no shared parent</span>`
+              : (externallyScoped ? `<span class="to-nav-tag">full subtree</span>` : '')}
             ${self._divMode === 'filter'
               ? `<span class="to-nav-tag warn" title="This division has no single head — it sits under ${self._divLines} separate reporting lines, so there is no subtree to show. Showing the tagged roles plus the managers above them (faint).">⚠ ${self._divLines} reporting lines · filtered</span>`
               : (self._divMode === 'subtree' ? `<span class="to-nav-tag">full subtree</span>` : '')}
@@ -1215,6 +1247,14 @@
               .attr('width', r1 * 2 + 34).attr('height', r1 * 2 + 4)
               .on('click', ev => { ev.stopPropagation(); expandNode(idOf(d)); });
           });
+
+          // Name the placeholder for what it is. Without this the wrapper reads as a real
+          // employee sitting above everyone, which is exactly the wrong thing to conclude.
+          // A <text> is safe here: the mode paints only ever restyle circles.
+          nodeG.filter(d => d.data.talent_role_id === '__root__')
+            .append('text').attr('class', 'to-synthetic-label')
+            .attr('text-anchor', 'middle').attr('y', -14)
+            .text('grouping only');
 
           // ── Open branches get a collapse handle ──
           // The counterpart to the "+N" marker: anything drawn with children can be shut
