@@ -46,6 +46,13 @@
           section: 'Scale',
           order: 2
         },
+        division_picker: {
+          label: 'Show the built-in division picker (off = drive it from a Looker filter)',
+          default: false,
+          type: 'boolean',
+          section: 'Scale',
+          order: 4
+        },
         max_nodes: {
           label: 'Most roles to draw at once (0 = fit to the tile)',
           default: 0,
@@ -508,20 +515,30 @@
         // When Looker filters remove rows, some nodes may reference a parent
         // that is no longer in the dataset. Promote those nodes to roots, then
         // wrap multiple roots under a single synthetic root so stratify succeeds.
+        // Why a query can arrive as a FOREST rather than a tree — and the two reasons are
+        // NOT the same thing, so the chart must not guess:
+        //
+        //   cutRoots  — the role names a manager who is not among these rows. Something
+        //               removed them: a filter, or the tile's row limit. The hierarchy
+        //               above this role exists, we just cannot see it.
+        //   freeRoots — the role records no manager at all. This is simply the top of the
+        //               organisation, and an org can legitimately have many (independent
+        //               entities, several boards, or a chart that starts below the CEO).
+        //
+        // Only the first is a data-collection problem worth flagging. Telling someone their
+        // managers were "removed by a filter" when they applied none, and their org really
+        // does have 43 top-level roles, is just wrong.
         const idSet = new Set(nodes.map(n => n.talent_role_id));
+        let cutRoots = 0;
         nodes.forEach(n => {
           if (n.parent_talent_role_id && !idSet.has(n.parent_talent_role_id)) {
             n.parent_talent_role_id = null;
+            cutRoots++;
           }
         });
-        const roots = nodes.filter(n => !n.parent_talent_role_id);
-        // How many top-level roles the query actually returned. When a Looker filter scopes
-        // the tile (by division, subsidiary, anything), the ancestors of the surviving roles
-        // are usually filtered out with everything else, so the result arrives as a FOREST
-        // rather than a tree. The synthetic root below keeps stratify working, but the user
-        // needs to be told that is what they are looking at — otherwise it renders as an
-        // unexplained grey hub in the middle of the chart.
+        const roots       = nodes.filter(n => !n.parent_talent_role_id);
         const rootCount   = roots.length;
+        const freeRoots   = rootCount - cutRoots;
         const forestQuery = rootCount > 1;
         if (roots.length > 1) {
           nodes.unshift({
@@ -1052,14 +1069,40 @@
         const externallyScoped = divisionsInData.length === 1 &&
           realNodes().every(n => (n.division_name || '').trim());
 
+        // Describe the forest from what the data actually says. Roles with no manager
+        // recorded are just the top of the org — reported plainly, in the neutral style.
+        // Roles pointing at a manager who is absent are a real gap, and only that case
+        // gets the warning colour and the "something removed them" reading.
+        const forestTag = () => {
+          const rolesTop = `${rootCount} top-level role${rootCount === 1 ? '' : 's'}`;
+          if (!cutRoots) {
+            return `<span class="to-nav-tag" title="${escAttr(
+              `This chart has ${rootCount} roles that record no manager, so there is no single role above them to draw and they are grouped under a placeholder. ` +
+              `That is normal when the organisation has several independent entities, or when the hierarchy simply starts below one shared head. Nothing is missing from the query.`
+            )}">${rolesTop} · no shared parent</span>`;
+          }
+          const detail = freeRoots > 0
+            ? `${cutRoots} of them name a manager who is not among these rows, and ${freeRoots} record no manager at all. `
+            : `All ${cutRoots} of them name a manager who is not among these rows. `;
+          return `<span class="to-nav-tag warn" title="${escAttr(
+            `This chart has ${rolesTop} and no single role above them, so they are grouped under a placeholder. ` +
+            detail +
+            `A missing manager usually means a filter excluded them, or the tile hit its row limit (Looker's default is 500). ` +
+            `Add the parent roles to the query, or raise the row limit, to see how these branches connect.`
+          )}">⚠ ${rolesTop} · ${cutRoots} manager${cutRoots === 1 ? '' : 's'} missing</span>`;
+        };
+
         const renderNav = () => {
           const el = document.getElementById('to-nav');
           if (!el) return;
           // The synthetic wrapper is scaffolding, not a role — it should not inflate either
           // side of the "x of y" count.
-          const syn    = forestQuery ? 1 : 0;
-          const drawn  = (viewRoot ? viewRoot.descendants().length : 0) - syn;
-          const total  = ALL_NODES.length - syn;
+          // Discount the placeholder only where it actually appears. It is always in
+          // ALL_NODES, but once the view is rerooted below it, it is no longer drawn —
+          // subtracting it from `drawn` regardless made a five-node view report four.
+          const synInView = forestQuery && viewIndex.has('__root__') ? 1 : 0;
+          const drawn  = (viewRoot ? viewRoot.descendants().length : 0) - synInView;
+          const total  = ALL_NODES.length - (forestQuery ? 1 : 0);
           const focusV = self._focusId ? ALL_NODES.find(v => idOf(v) === String(self._focusId)) : null;
           const needed = self._focusId || self._divView || externallyScoped || forestQuery || drawn < total;
           if (!needed) { el.classList.add('hidden'); el.innerHTML = ''; return; }
@@ -1077,14 +1120,14 @@
             ${crumbs}
             <span style="width:1px;height:14px;background:#e0e0e0;"></span>
             ${externallyScoped
-              ? `<span class="to-nav-tag scoped" title="This tile's Looker filter has already narrowed the query to one division, so the built-in division picker would have nothing to add. Clear the dashboard filter to browse the whole organisation here.">🔒 ${divisionsInData[0]} · dashboard filter</span>`
-              : `<select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
-                  <option value="">All divisions</option>
-                  ${divisionsInData.map(d => `<option value="${escAttr(d)}" ${normUnit(d) === normUnit(self._divView) ? 'selected' : ''}>${d}</option>`).join('')}
-                </select>`}
-            ${forestQuery
-              ? `<span class="to-nav-tag warn" title="The query returned ${rootCount} top-level roles. Their managers were removed by a Looker filter, so these branches have no shared parent in this data and are grouped under a placeholder. Add the parent roles to the query to see how they connect.">⚠ ${rootCount} reporting lines · no shared parent</span>`
-              : (externallyScoped ? `<span class="to-nav-tag">full subtree</span>` : '')}
+              ? `<span class="to-nav-tag scoped" title="This tile's Looker filter has narrowed the query to one division. The chart draws exactly the rows the query returned.">🔒 ${divisionsInData[0]} · dashboard filter</span>`
+              : (config.division_picker
+                  ? `<select class="to-nav-sel" id="to-nav-div" title="Show only this division and the roles above it">
+                      <option value="">All divisions</option>
+                      ${divisionsInData.map(d => `<option value="${escAttr(d)}" ${normUnit(d) === normUnit(self._divView) ? 'selected' : ''}>${d}</option>`).join('')}
+                    </select>`
+                  : '')}
+            ${forestQuery ? forestTag() : (externallyScoped ? `<span class="to-nav-tag">full subtree</span>` : '')}
             ${self._divMode === 'filter'
               ? `<span class="to-nav-tag warn" title="This division has no single head — it sits under ${self._divLines} separate reporting lines, so there is no subtree to show. Showing the tagged roles plus the managers above them (faint).">⚠ ${self._divLines} reporting lines · filtered</span>`
               : (self._divMode === 'subtree' ? `<span class="to-nav-tag">full subtree</span>` : '')}
