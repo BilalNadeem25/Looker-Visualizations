@@ -86,7 +86,11 @@
 
         const style = document.createElement('style');
         style.textContent = `
-          .to-toggle { position:absolute; top:10px; left:10px; display:flex; flex-wrap:wrap; max-width:calc(100% - 20px); gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); z-index:10; align-items:center; }
+          /* Stops before the centred search box rather than sliding underneath it: the
+             search is 258px wide and centred, so its left edge sits at 50% - 129px. When
+             the buttons no longer fit they wrap to a second row, and the scale bar below
+             is repositioned to match (see renderNav). */
+          .to-toggle { position:absolute; top:10px; left:10px; display:flex; flex-wrap:wrap; box-sizing:border-box; max-width:calc(50% - 142px); gap:6px; background:rgba(255,255,255,0.95); padding:5px 9px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.12); z-index:10; align-items:center; }
           .to-toggle span { font-size:11px; color:#888; }
           .to-btn { font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid #ddd; background:#fff; cursor:pointer; color:#555; }
           .to-btn.active { background:#3498db; color:#fff; border-color:#3498db; }
@@ -159,7 +163,30 @@
           .to-btn:disabled { cursor:default; opacity:0.45; }
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
-          .to-btn.lens-on { background:#2c3e50; color:#fff; border-color:#2c3e50; }
+          .to-btn.lens-on, .to-nav-btn.lens-on { background:#2c3e50; color:#fff; border-color:#2c3e50; }
+          /* ── Drag grips ──
+             Deliberately a ::before pseudo-element, not a child node: the nav bar, summary,
+             placements card and legend all rebuild their innerHTML, which would delete a
+             real grip element every render. CSS survives that. Pseudo-elements are not
+             event targets, so the mousedown lands on the panel itself and the handler
+             hit-tests the corner. The -l variant sits left of a horizontal bar's content,
+             -r in the top-right of a tall card where nothing else lives.
+             NB: no backticks in here — this whole block is a JS template literal, and one
+             stray backtick ends it and turns the rest of the CSS into code. */
+          .to-grip-l { padding-left:23px !important; }
+          .to-grip-r { padding-right:22px !important; }
+          .to-grip-l::before, .to-grip-r::before {
+            content:''; position:absolute; top:7px; width:9px; height:13px; cursor:grab;
+            background-image:radial-gradient(#ccd3da 1.1px, transparent 1.2px);
+            background-size:4.5px 4.5px;
+          }
+          .to-grip-l::before { left:7px; }
+          .to-grip-r::before { right:6px; }
+          .to-grip-l:hover::before, .to-grip-r:hover::before { background-image:radial-gradient(#7f8b98 1.1px, transparent 1.2px); }
+          .to-dragging, .to-dragging::before { cursor:grabbing !important; }
+          .to-dragging { box-shadow:0 6px 22px rgba(0,0,0,0.26) !important; }
+          .to-nav-sep { width:1px; height:14px; background:#e0e0e0; }
+          .to-nav-lbl { color:#888; white-space:nowrap; }
           .to-chord { fill:none; stroke:#16a085; stroke-width:1.6; stroke-opacity:0.8; stroke-linecap:round; pointer-events:none; }
           .to-btn.auto { border-color:#8e44ad; color:#8e44ad; font-weight:600; }
           .to-btn.auto:hover:not(:disabled) { background:#f6eefb; }
@@ -305,11 +332,6 @@
           <button class="to-btn" id="to-btn-fit" title="Simulate better role placements to raise role fit">Optimize Fit</button>
           <button class="to-btn auto" id="to-btn-auto" title="Find and apply the best set of role swaps automatically" style="display:none;">⚡ Auto-Optimize</button>
           <button class="to-btn" id="to-btn-reset" style="display:none;">↺ Reset</button>
-          <span style="width:1px;height:16px;background:#e0e0e0;margin:0 2px;"></span>
-          <span style="font-size:11px;color:#888;">Only:</span>
-          <button class="to-btn" id="to-btn-mcp" title="Show only mission-critical positions, keeping the managers above them so the tree stays connected">MCP</button>
-          <button class="to-btn" id="to-btn-talent" title="Show only critical talents, keeping the managers above them so the tree stays connected">Critical Talent</button>
-          <button class="to-btn" id="to-btn-moves" title="Show only the roles this plan moves, so they are not lost among everything else" style="display:none;">Moves</button>
         `;
         element.appendChild(toggle);
 
@@ -384,6 +406,72 @@
         });
         element.appendChild(exportEl);
 
+        // ── Draggable panels ───────────────────────────────────────
+        // Every floating panel can be repositioned, because no fixed arrangement survives
+        // every tile shape: a narrow tile wraps the toolbar, a wide one leaves gaps, and
+        // which corner is "in the way" depends on where the org's nodes happen to land.
+        // A panel the user has moved is pinned — the automatic stacking in renderNav stops
+        // touching it, otherwise the next render would snap it back.
+        this._panelPos = {};     // key -> {left, top}, so a Looker re-render keeps the layout
+        this._moved    = {};     // key -> true once dragged, which disables auto-placement
+        const GRIP = 24;         // hit box for the grip corner
+
+        const makeMovable = (panel, key, side) => {
+          panel.classList.add(side === 'r' ? 'to-grip-r' : 'to-grip-l');
+          const onGrip = ev => {
+            const r = panel.getBoundingClientRect();
+            const x = ev.clientX - r.left, y = ev.clientY - r.top;
+            if (y < 0 || y > GRIP) return false;
+            return side === 'r' ? (x > r.width - GRIP && x < r.width) : (x >= 0 && x < GRIP);
+          };
+          panel.addEventListener('mousedown', ev => {
+            if (ev.button !== 0 || !onGrip(ev)) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const host = element.getBoundingClientRect();
+            const r    = panel.getBoundingClientRect();
+            const offX = ev.clientX - r.left, offY = ev.clientY - r.top;
+            panel.classList.add('to-dragging');
+            const move = e => {
+              // Clamped to the tile so a panel can never be dragged out of reach.
+              const l = Math.max(0, Math.min(e.clientX - host.left - offX, host.width  - r.width));
+              const t = Math.max(0, Math.min(e.clientY - host.top  - offY, host.height - r.height));
+              // Anchors are cleared: several panels are pinned by right/bottom, and leaving
+              // those set would fight the left/top being written here.
+              panel.style.left = l + 'px';
+              panel.style.top  = t + 'px';
+              panel.style.right = 'auto';
+              panel.style.bottom = 'auto';
+              this._panelPos[key] = { left: l, top: t };
+              this._moved[key] = true;
+            };
+            const up = () => {
+              panel.classList.remove('to-dragging');
+              document.removeEventListener('mousemove', move);
+              document.removeEventListener('mouseup', up);
+            };
+            document.addEventListener('mousemove', move);
+            document.addEventListener('mouseup', up);
+          });
+          // Double-clicking the grip returns the panel to its stylesheet position.
+          panel.addEventListener('dblclick', ev => {
+            if (!onGrip(ev)) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            delete this._panelPos[key];
+            this._moved[key] = false;
+            panel.style.left = panel.style.top = panel.style.right = panel.style.bottom = '';
+          });
+        };
+
+        makeMovable(toggle,      'toolbar', 'l');
+        makeMovable(navBar,      'nav',     'l');
+        makeMovable(searchEl,    'search',  'l');
+        makeMovable(colorLegend, 'legend',  'l');
+        makeMovable(summary,     'summary', 'r');
+        makeMovable(cascade,     'cascade', 'r');
+
+        this._toolbar      = toggle;   // the scale bar is positioned under it, whatever its height
         this._chart        = chart;
         this._tooltip      = tooltip;
         this._action       = action;
@@ -657,16 +745,6 @@
 
         const renderSummary = () => {
           const rn = realNodes();
-          // The Moves lens only means anything once a plan exists, so the button appears
-          // with the first placement and leaves with the last. This lives here because
-          // renderSummary is the one function every placement change routes through —
-          // Auto-Optimize, a hand-made move, an undo, and Reset all call it.
-          // Visibility only. Clearing the lens itself belongs to afterPlacementChange and
-          // the fit-mode toggle, which also drop the button's active class and redraw —
-          // doing it here as well just disarmed the flag behind their backs, so they saw
-          // nothing to clean up and left the view filtered to an empty set.
-          const movesBtn = document.getElementById('to-btn-moves');
-          if (movesBtn) movesBtn.style.display = (this._fitMode && rn.some(n => n._placedUser)) ? '' : 'none';
           const ohiGroups = { High: 0, Medium: 0, Low: 0, 'N/A': 0 };
           rn.forEach(n => { const o = n.org_health_index || 'N/A'; if (o in ohiGroups) ohiGroups[o]++; else ohiGroups['N/A']++; });
           const benchOf = key => {
@@ -1160,12 +1238,10 @@
           const drawn  = (viewRoot ? viewRoot.descendants().length : 0) - synInView;
           const total  = ALL_NODES.length - (forestQuery ? 1 : 0);
           const focusV = self._focusId ? ALL_NODES.find(v => idOf(v) === String(self._focusId)) : null;
-          // `drawn < total` alone is not enough: Expand all makes them equal and the bar
-          // would vanish, stranding the user with no way to collapse back. Any manual
-          // open/close state keeps it on screen.
-          const needed = self._focusId || self._divView || externallyScoped || forestQuery ||
-                         lensOn() || drawn < total || self._expanded.size || self._collapsed.size;
-          if (!needed) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+          // The bar is now always present. It began as scale-only controls that a small org
+          // did not need, but it also carries the lens toggles, which are useful at any
+          // size — and hiding it took them with it, along with Collapse all once Expand all
+          // had made `drawn === total`.
 
           const trail = focusV ? focusV.ancestors().reverse() : [root];
           const crumbs = trail.map((v, i) => {
@@ -1193,6 +1269,13 @@
               : (self._divMode === 'subtree' ? `<span class="to-nav-tag">full subtree</span>` : '')}
             ${drawn < total ? `<button class="to-nav-btn" id="to-nav-all" title="Open every branch. All ${total} roles at once is hard to read — Collapse all, or a reroot, brings it back to a legible view.">Expand all</button>` : ''}
             <button class="to-nav-btn" id="to-nav-auto" title="Close every branch, leaving just the top of the chart">Collapse all</button>
+            <span class="to-nav-sep"></span>
+            <span class="to-nav-lbl">Only:</span>
+            <button class="to-nav-btn${self._onlyMcp ? ' lens-on' : ''}" data-lens="mcp" title="Show only mission-critical positions, keeping the managers above them so the tree stays connected">MCP</button>
+            <button class="to-nav-btn${self._onlyTalent ? ' lens-on' : ''}" data-lens="talent" title="Show only critical talents, keeping the managers above them so the tree stays connected">Critical Talent</button>
+            ${(self._fitMode && realNodes().some(n => n._placedUser))
+              ? `<button class="to-nav-btn${self._onlyMoves ? ' lens-on' : ''}" data-lens="moves" title="Show only the roles this plan moves, so they are not lost among everything else">Show Moves</button>`
+              : ''}
             ${lensOn() ? (() => {
               // Report drawn-vs-total matches, not just the total: the node budget and the
               // connector roles both take room, so "MCP: 242" beside 65 visible dots reads
@@ -1209,6 +1292,14 @@
             <span class="to-nav-stat">${drawn} of ${total} shown</span>`;
 
           el.classList.remove('hidden');
+          // Sit directly under the toolbar. Its height is not fixed — on a narrow tile the
+          // buttons wrap to a second row — so a hardcoded top would be overlapped by it.
+          // The placements/cascade card below then follows this bar for the same reason.
+          // Skipped for any panel the user has dragged — re-running the stack would drag it
+          // straight back and make the whole thing feel broken.
+          const moved = self._moved || {};
+          if (self._toolbar && !moved.nav) el.style.top = (self._toolbar.offsetTop + self._toolbar.offsetHeight + 6) + 'px';
+          if (self._cascade && !moved.cascade) self._cascade.style.top = (el.offsetTop + el.offsetHeight + 6) + 'px';
           el.querySelectorAll('[data-crumb]').forEach(c => {
             c.onclick = () => {
               const id = c.getAttribute('data-crumb');
@@ -1235,6 +1326,19 @@
           // leave the automatic fit re-opening a few hundred nodes and look like nothing
           // happened. The view root stays open, so what you get is the top of the chart with
           // each branch folded to a "+N" ring.
+          // The lens buttons are re-created on every nav render, so their handlers are bound
+          // here and their active state comes straight from the flags above — one source of
+          // truth, rather than element references that go stale on the next render.
+          el.querySelectorAll('[data-lens]').forEach(b => {
+            b.onclick = () => {
+              const k = b.getAttribute('data-lens');
+              if (k === 'mcp')    self._onlyMcp    = !self._onlyMcp;
+              if (k === 'talent') self._onlyTalent = !self._onlyTalent;
+              if (k === 'moves')  self._onlyMoves  = !self._onlyMoves;
+              applyLens();
+            };
+          });
+
           const autoBtn = document.getElementById('to-nav-auto');
           if (autoBtn) autoBtn.onclick = () => {
             self._expanded.clear();
@@ -1515,9 +1619,6 @@
         const btnScenario = document.getElementById('to-btn-scenario');
         const btnFit      = document.getElementById('to-btn-fit');
         const btnAuto     = document.getElementById('to-btn-auto');
-        const btnMcp      = document.getElementById('to-btn-mcp');
-        const btnTalent   = document.getElementById('to-btn-talent');
-        const btnMoves    = document.getElementById('to-btn-moves');
         const btnReset    = document.getElementById('to-btn-reset');
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
@@ -2478,13 +2579,12 @@
         // set (and, after the last undo, an empty chart with no button left to escape it).
         const afterPlacementChange = () => {
           const emptied = self._onlyMoves && !realNodes().some(n => n._placedUser);
-          if (emptied) {
-            self._onlyMoves = false;
-            const b = document.getElementById('to-btn-moves');
-            if (b) b.classList.remove('lens-on');
-          }
+          if (emptied) self._onlyMoves = false;
           if (self._onlyMoves || emptied) redraw(false);
-          else { paintFit(); renderSummary(); renderFitPanel(); }
+          // renderNav is not optional on the repaint path: the Show Moves button only
+          // exists while a plan does, so the bar has to be re-rendered when placements
+          // appear or vanish. (redraw already covers it via drawTree.)
+          else { paintFit(); renderSummary(); renderFitPanel(); renderNav(); }
         };
 
         // Route the shared left-docked panel to whichever simulation is active.
@@ -2889,7 +2989,7 @@
           // the way out — so leaving with it on would strand a filtered view with no
           // control left to release it.
           const droppedMoves = !self._fitMode && self._onlyMoves;
-          if (droppedMoves) { self._onlyMoves = false; btnMoves.classList.remove('lens-on'); }
+          if (droppedMoves) self._onlyMoves = false;
           if (self._fitMode) {
             self._preColorMode = self._colorMode;
           } else if (self._preColorMode) {
@@ -2906,11 +3006,9 @@
         // button would still read "Auto-Optimize" while the thread is blocked.
         // Lens toggles. They change only which roles are DRAWN — the summary, the optimizer
         // and the scenario engine keep working on the whole organisation, so switching one
-        // on never silently narrows an analysis.
+        // on never silently narrows an analysis. The button states are painted by renderNav,
+        // which the redraw below calls.
         const applyLens = () => {
-          btnMcp.classList.toggle('lens-on', self._onlyMcp);
-          btnTalent.classList.toggle('lens-on', self._onlyTalent);
-          btnMoves.classList.toggle('lens-on', self._onlyMoves);
           self._hideEmployeeCard();
           self._action.classList.remove('visible');
           self._focusId = null;        // a focus chosen under the old lens may not survive it
@@ -2918,9 +3016,6 @@
           self._collapsed.clear();
           redraw(true);
         };
-        btnMcp.onclick = () => { self._onlyMcp = !self._onlyMcp; applyLens(); };
-        btnTalent.onclick = () => { self._onlyTalent = !self._onlyTalent; applyLens(); };
-        btnMoves.onclick = () => { self._onlyMoves = !self._onlyMoves; applyLens(); };
 
         btnAuto.onclick = () => {
           if (!self._fitMode || btnAuto.disabled) return;
