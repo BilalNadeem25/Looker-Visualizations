@@ -294,6 +294,9 @@
   .cx-suggest-lbl{font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:#9aa4b0}
   .cx-sugg{border:1px solid var(--line); background:#fff; color:var(--accent); font-weight:700; font-size:12px; border-radius:20px; padding:5px 11px; cursor:pointer}
   .cx-sugg:hover{border-color:var(--accent)}
+  /* The top-ranked qualifier reads as the primary action, since it is the pick the system would
+     have made for you before this became a manual step. */
+  .cx-sugg-best{border-color:var(--accent); background:var(--accent-soft)}
   .cx-sugg-gf{color:var(--pos); font-variant-numeric:tabular-nums}
   .cx-tblwrap{background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow-x:auto}
   .cx-tblwrap table{border-collapse:collapse; width:100%; min-width:520px}
@@ -419,9 +422,8 @@
         mode: "compare", behaviours: [], simFocus: null, simComplements: {}, simWeak: {}, simScope: "department",
         // simAuto: the complement is still system-picked — any manual add/remove clears it so the
         // user's choice sticks. simScopeAuto: the pool is still being found by the cascade —
-        // choosing a level by hand pins it. Switching successor re-arms both. simAutoPk labels
-        // whoever the automatic pick landed on, for the card pill.
-        simAuto: true, simScopeAuto: true, simAutoPk: null,
+        // choosing a level by hand pins it. Switching successor re-arms both.
+        simAuto: true, simScopeAuto: true,
         // The chipped person exists but has no assessment against the charted role, so there is
         // deliberately no successor. Distinct from "focus went stale", which re-defaults.
         simFocusMissing: false,
@@ -495,7 +497,7 @@
       $.scope.addEventListener("change", function () {
         st.simScope = $.scope.value;
         st.simScopeAuto = false;   // pinned by hand — search here, do not re-cascade
-        self._autoPick(); self._draw();
+        self._resetPool(); self._draw();
       });
       $.zoom.addEventListener("click", function (e) {
         var b = e.target.closest("button"); if (!b) return;
@@ -537,7 +539,7 @@
         var sug = e.target.closest(".cx-sugg");
         if (sug) { st.simComplements[sug.getAttribute("data-pk")] = true; st.simAuto = false; self._draw(); return; }
         var wide = e.target.closest(".cx-widen");
-        if (wide) { st.simScope = wide.getAttribute("data-scope"); st.simScopeAuto = false; self._autoPick(); self._draw(); return; }
+        if (wide) { st.simScope = wide.getAttribute("data-scope"); st.simScopeAuto = false; self._resetPool(); self._draw(); return; }
         var rm = e.target.closest(".nx-cardremove");
         if (rm) { self._togglePair(rm.getAttribute("data-pk")); st.openMenuPk = null; self._draw(); return; }
         var add = e.target.closest(".nx-addrole");
@@ -560,7 +562,7 @@
         st.simWeak[c.getAttribute("data-sbeh")] = c.checked;
         // the gaps define who qualifies, so the automatic pick (and the scope it was found in)
         // is re-derived from scratch; _draw rather than _renderSim, as the chart highlights move
-        self._autoPick(); self._draw();
+        self._resetPool(); self._draw();
       });
 
       this._sizeChart();
@@ -816,14 +818,14 @@
       if (roleChanged || moved || stale) {
         st.simAuto = true; st.simScopeAuto = true;
         this._defaultWeak();
-        this._autoPick();                   // walks department -> division -> directorate -> org
+        this._resetPool();                   // walks department -> division -> directorate -> org
       } else {
         Object.keys(st.simComplements).forEach(function (pk) {
           if (!st.byPair[pk] || st.byPair[pk].roleId !== st.chartRole) delete st.simComplements[pk];
         });
         // the level may have emptied out (or become usable) as rows changed
         if (st.simScope !== "org" && !this._simCandidates(st.simScope).length) st.simScope = this._defaultScope();
-        this._autoPick();                   // no-op unless the pick is still system-managed
+        this._resetPool();                   // no-op unless the pick is still system-managed
       }
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
       this._renderTags(); this._renderSug();   // chips carry names, which only exist once rows land
@@ -1035,7 +1037,7 @@
         // A new successor is a fresh problem: different gaps, a different org unit, and the
         // automatic pickers are back in charge until this user overrides them again.
         this.state.simAuto = true; this.state.simScopeAuto = true;
-        this._defaultWeak(); this._autoPick();
+        this._defaultWeak(); this._resetPool();
       }
       this._renderTags(); this._renderSug(); this._draw();
     },
@@ -1648,19 +1650,19 @@
     // the way once the user has added or removed anyone by hand (simAuto false) until they switch
     // successor; a pool they pinned by hand (simScopeAuto false) is searched as-is instead of
     // re-cascading, so widening to "whole organisation" is not undone on the next data refresh.
-    _autoPick: function () {
+    // Clears the complement selection and re-defaults the pool to the smallest org level that
+    // holds a qualifier. It does NOT choose a complement any more — the best one is offered as a
+    // button in the panel instead. Auto-applying it meant that removing it and picking someone
+    // else destroyed the recommendation: there was no way back to a suggestion once rejected.
+    _resetPool: function () {
       var st = this.state;
-      st.simAutoPk = null;
-      // No successor means no gaps to cover, and every ranking helper below dereferences the
-      // focus. Guarding once here keeps _defaultScope / _simRanked / _qualifies safe rather than
-      // null-checking each of them — reachable now that a chipped person may not be assessed
-      // against the charted role.
+      // No successor means no gaps to cover, and _defaultScope / _qualifies below dereference the
+      // focus. Guarding once here keeps them safe rather than null-checking each — reachable now
+      // that simulate opens with nobody selected.
       if (!this._simFocusEmp()) { st.simComplements = {}; return; }
-      if (!st.simAuto) return;
+      if (!st.simAuto) return;          // the user owns the selection; leave it alone
       if (st.simScopeAuto) st.simScope = this._defaultScope();
       st.simComplements = {};
-      var best = this._simRanked().filter(function (r) { return r.ok; })[0];
-      if (best) { st.simComplements[best.e.pk] = true; st.simAutoPk = best.e.pk; }
     },
     _defaultWeak: function () {
       var st = this.state, f = this._simFocusEmp(); st.simWeak = {};
@@ -1872,9 +1874,10 @@
             (outside ? '<span class="cx-outside">outside ' + esc(self._scopeLabel(st.simScope).toLowerCase()) + '</span>' : '') +
           '</div>' +
           '<div class="cx-nm">' + esc(p.name) + '</div><div class="cx-ttl">' + esc(p.jobTitle || p.company || "") + '</div>' +
-          (p.pk === st.simAutoPk
-            ? '<div class="cx-rec-line"><span class="cx-rec-pill">Auto-selected — best cover</span></div>'
-            : (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '')) +
+          // No "auto-selected" pill any more: nothing arrives on this card without a click, so
+          // every complement here is the user's own. "Recommended" still marks the ones the
+          // ranking would have suggested.
+          (recIds[p.pk] ? '<div class="cx-rec-line"><span class="cx-rec-pill">Recommended</span></div>' : '') +
           (self._orgLine(p) ? '<div class="cx-meta">' + self._orgLine(p) + '</div>' : '') +
           '<div class="cx-meta">Role fit <b>' + Math.round(p.roleFit) + '%</b> · Overall behaviour <b>' + Math.round(ov) + '%</b>' +
             (self._levelText(p, true) ? ' · ' + self._levelText(p, true) : '') + '</div>' +
@@ -1883,13 +1886,22 @@
       html += '</div>';
 
       // Suggestions are qualifiers only — someone who lifts every checked gap. The number shown
-      // is the WEAKEST of those lifts, which is also the ranking key, so the chips read in order.
-      var sugg = rank.filter(function (r) { return r.ok && !st.simComplements[r.e.pk]; }).slice(0, 3);
-      if (sugg.length) {
-        html += '<div class="cx-suggest"><span class="cx-suggest-lbl">Lifts every checked gap</span>' +
-          sugg.map(function (r) {
-            return '<button class="cx-sugg" data-pk="' + esc(r.e.pk) + '" title="Weakest lift across the ' +
-              chk.n + ' checked gaps; average +' + Math.round(r.gf) + '">' + esc(r.e.name) +
+      // is the WEAKEST of those lifts, which is also the ranking key, so the chips read in order
+      // and the FIRST one is the best cover in the current pool.
+      //
+      // These are the only route in now that nothing is auto-applied, which is the point: a
+      // recommendation you can take, drop and take again. Recomputed on every draw against the
+      // current pool, so removing a complement puts it straight back on offer, and widening the
+      // pool re-ranks rather than losing the suggestion.
+      var open = rank.filter(function (r) { return r.ok && !st.simComplements[r.e.pk]; });
+      if (open.length) {
+        html += '<div class="cx-suggest"><span class="cx-suggest-lbl">Add a complement</span>' +
+          open.slice(0, 3).map(function (r, i) {
+            return '<button class="cx-sugg' + (i === 0 ? ' cx-sugg-best' : '') +
+              '" data-pk="' + esc(r.e.pk) + '" title="' +
+              (i === 0 ? 'Best cover in this pool. ' : '') + 'Weakest lift across the ' +
+              chk.n + ' checked gaps; average +' + Math.round(r.gf) + '">' +
+              (i === 0 ? 'Best · ' : '') + esc(r.e.name) +
               ' <span class="cx-sugg-gf">+' + Math.round(r.min) + ' min</span></button>';
           }).join("") +
           '</div>';
