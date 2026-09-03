@@ -159,6 +159,7 @@
           .to-btn:disabled { cursor:default; opacity:0.45; }
           .to-btn.scenario-on { background:#8e44ad; color:#fff; border-color:#8e44ad; }
           .to-btn.fit-on { background:#16a085; color:#fff; border-color:#16a085; }
+          .to-btn.lens-on { background:#2c3e50; color:#fff; border-color:#2c3e50; }
           .to-btn.auto { border-color:#8e44ad; color:#8e44ad; font-weight:600; }
           .to-btn.auto:hover:not(:disabled) { background:#f6eefb; }
           .to-opt-block { margin-top:5px; padding-top:4px; border-top:1px solid #eee; }
@@ -303,6 +304,10 @@
           <button class="to-btn" id="to-btn-fit" title="Simulate better role placements to raise role fit">Optimize Fit</button>
           <button class="to-btn auto" id="to-btn-auto" title="Find and apply the best set of role swaps automatically" style="display:none;">⚡ Auto-Optimize</button>
           <button class="to-btn" id="to-btn-reset" style="display:none;">↺ Reset</button>
+          <span style="width:1px;height:16px;background:#e0e0e0;margin:0 2px;"></span>
+          <span style="font-size:11px;color:#888;">Only:</span>
+          <button class="to-btn" id="to-btn-mcp" title="Show only mission-critical positions, keeping the managers above them so the tree stays connected">MCP</button>
+          <button class="to-btn" id="to-btn-talent" title="Show only critical talents, keeping the managers above them so the tree stays connected">Critical Talent</button>
         `;
         element.appendChild(toggle);
 
@@ -403,6 +408,8 @@
         this._divMode      = '';          // how it resolved: 'subtree' | 'filter'
         this._divRoot      = null;        // in subtree mode, the division's head role
         this._divLines     = 0;           // in filter mode, how many reporting lines it spans
+        this._onlyMcp      = false;       // lens: mission-critical positions only
+        this._onlyTalent   = false;       // lens: critical talents only
         // Result of the last Auto-Optimize run (null once the plan is edited by hand).
         this._optReport    = null;
         this._gapIdx       = 0;
@@ -906,19 +913,38 @@
           return { mode: 'filter', rootId: null, lines, matches: matches.length };
         };
 
-        // Ancestor-preserving keep set — only used in `filter` mode. Returns null when
-        // everything passes, else every role in the division PLUS every ancestor of one, so
-        // the matches stay hung off the real tree instead of becoming orphan roots.
+        // ── Lenses ─────────────────────────────────────────────────
+        // Narrowing views that answer "where are my mission-critical positions" and "where
+        // are my critical talents". Each is a predicate on a role; several can be on at
+        // once and they NARROW, so MCP + Critical Talent reads as "critical people sitting
+        // in critical seats" — is_mission_critical_position is a property of the role and
+        // is_talent a property of its holder, which makes the intersection a real question
+        // rather than a coincidence.
+        const divFilterOn = () => self._divMode === 'filter' && !!normUnit(self._divView);
+        const lensOn      = () => self._onlyMcp || self._onlyTalent || divFilterOn();
+        const matchesLens = d => {
+          if (!d || d.talent_role_id === '__root__') return false;
+          if (self._onlyMcp    && !isTruthy(d.is_mission_critical_position)) return false;
+          if (self._onlyTalent && !isTruthy(d.is_talent)) return false;
+          if (divFilterOn()    && normUnit(d.division_name) !== normUnit(self._divView)) return false;
+          return true;
+        };
+
+        // Ancestor-preserving keep set. Returns null when nothing is filtered, else every
+        // matching role PLUS every ancestor of one — so matches stay hung off the real tree
+        // instead of becoming orphan roots, and you can still see where they sit. Ancestors
+        // kept only as connectors are drawn faint (see `_connect`).
         const keepSet = () => {
-          const want = normUnit(self._divView);
-          if (!want || self._divMode !== 'filter') return null;
+          if (!lensOn()) return null;
           const keep = new Set();
           ALL_NODES.forEach(v => {
-            if (normUnit(v.data.division_name) !== want) return;
+            if (!matchesLens(v.data)) return;
             v.ancestors().forEach(a => keep.add(idOf(a)));   // includes v itself
           });
+          keep.add(idOf(root));   // never leave the canvas with nothing to draw
           return keep;
         };
+        const lensMatchCount = () => ALL_NODES.reduce((n, v) => n + (matchesLens(v.data) ? 1 : 0), 0);
 
         // Children a node should show, given the filter. Order is preserved.
         const visibleKids = (id, keep) => {
@@ -1041,7 +1067,7 @@
             const kids = visibleKids(idOf(v), keepNow);
             v._folded  = kids.length > 0 && !v.children;
             v._hidden  = v._folded ? hiddenStats(idOf(v), keepNow) : null;
-            v._connect = !!(keepNow && normUnit(v.data.division_name) !== normUnit(self._divView));
+            v._connect = !!(keepNow && !matchesLens(v.data));
           });
           const leafCount = viewRoot.leaves().length;
           const minRadius = Math.min(W, H) / 2 - 60;
@@ -1104,7 +1130,11 @@
           const drawn  = (viewRoot ? viewRoot.descendants().length : 0) - synInView;
           const total  = ALL_NODES.length - (forestQuery ? 1 : 0);
           const focusV = self._focusId ? ALL_NODES.find(v => idOf(v) === String(self._focusId)) : null;
-          const needed = self._focusId || self._divView || externallyScoped || forestQuery || drawn < total;
+          // `drawn < total` alone is not enough: Expand all makes them equal and the bar
+          // would vanish, stranding the user with no way to collapse back. Any manual
+          // open/close state keeps it on screen.
+          const needed = self._focusId || self._divView || externallyScoped || forestQuery ||
+                         lensOn() || drawn < total || self._expanded.size || self._collapsed.size;
           if (!needed) { el.classList.add('hidden'); el.innerHTML = ''; return; }
 
           const trail = focusV ? focusV.ancestors().reverse() : [root];
@@ -1131,8 +1161,20 @@
             ${self._divMode === 'filter'
               ? `<span class="to-nav-tag warn" title="This division has no single head — it sits under ${self._divLines} separate reporting lines, so there is no subtree to show. Showing the tagged roles plus the managers above them (faint).">⚠ ${self._divLines} reporting lines · filtered</span>`
               : (self._divMode === 'subtree' ? `<span class="to-nav-tag">full subtree</span>` : '')}
-            ${drawn < total ? `<button class="to-nav-btn" id="to-nav-all">Expand all</button>` : ''}
-            ${(self._expanded.size || self._collapsed.size) ? `<button class="to-nav-btn" id="to-nav-auto" title="Forget the branches you opened and closed by hand and re-fit automatically">Auto-fit</button>` : ''}
+            ${drawn < total ? `<button class="to-nav-btn" id="to-nav-all" title="Open every branch. All ${total} roles at once is hard to read — Collapse all, or a reroot, brings it back to a legible view.">Expand all</button>` : ''}
+            <button class="to-nav-btn" id="to-nav-auto" title="Close every branch, leaving just the top of the chart">Collapse all</button>
+            ${lensOn() ? (() => {
+              // Report drawn-vs-total matches, not just the total: the node budget and the
+              // connector roles both take room, so "MCP: 242" beside 65 visible dots reads
+              // as a bug. Expand all lifts the rest into view.
+              const hit  = viewRoot ? viewRoot.descendants().filter(v => !v._connect && v.data.talent_role_id !== '__root__').length : 0;
+              const all  = lensMatchCount();
+              const name = [self._onlyMcp ? 'MCP' : '', self._onlyTalent ? 'critical talent' : ''].filter(Boolean).join(' + ') || 'filtered';
+              return `<span class="to-nav-tag" title="${escAttr(
+                `${all} role(s) in the organisation match this filter; ${hit} of them fit in the current view — use Expand all to reach the rest. ` +
+                `The paler roles are the managers above the matches, kept so the tree stays connected; they are not matches themselves.`
+              )}">${name}: ${hit}${hit < all ? ` of ${all}` : ''}</span>`;
+            })() : ''}
             <span class="to-nav-stat">${drawn} of ${total} shown</span>`;
 
           el.classList.remove('hidden');
@@ -1157,17 +1199,29 @@
             self._collapsed.clear();
             redraw(true);
           };
+          // Collapse all — the counterpart to Expand all, so the label has to mean it: shut
+          // every branch rather than merely forgetting the ones opened by hand, which would
+          // leave the automatic fit re-opening a few hundred nodes and look like nothing
+          // happened. The view root stays open, so what you get is the top of the chart with
+          // each branch folded to a "+N" ring.
           const autoBtn = document.getElementById('to-nav-auto');
           if (autoBtn) autoBtn.onclick = () => {
             self._expanded.clear();
             self._collapsed.clear();
+            const keepOpen = String(self._focusId || idOf(root));
+            ALL_NODES.forEach(v => {
+              if (idOf(v) === keepOpen) return;
+              if ((childrenOf.get(idOf(v)) || []).length) self._collapsed.add(idOf(v));
+            });
             redraw(true);
           };
           const allBtn = document.getElementById('to-nav-all');
-          // Deliberately capped: past a few hundred nodes the drawing stops being readable,
-          // which is the problem this whole mechanism exists to solve.
+          // No confirm dialog here. Looker sandboxes the viz iframe and can block
+          // window.confirm outright, in which case it returns false and the button silently
+          // does nothing — a dead control is worse than a busy chart. The cost is only
+          // legibility, the user asked for it explicitly, and a full 2000-role draw
+          // measures around a quarter of a second. The warning lives in the tooltip.
           if (allBtn) allBtn.onclick = () => {
-            if (total > 600 && !window.confirm(`Expanding shows all ${total} roles at once, which gets hard to read. Continue?`)) return;
             ALL_NODES.forEach(v => self._expanded.add(idOf(v)));
             self._collapsed.clear();
             redraw(true);
@@ -1394,6 +1448,8 @@
         const btnScenario = document.getElementById('to-btn-scenario');
         const btnFit      = document.getElementById('to-btn-fit');
         const btnAuto     = document.getElementById('to-btn-auto');
+        const btnMcp      = document.getElementById('to-btn-mcp');
+        const btnTalent   = document.getElementById('to-btn-talent');
         const btnReset    = document.getElementById('to-btn-reset');
         const btnOhi      = document.getElementById('to-btn-ohi');
         const btnBench    = document.getElementById('to-btn-bench-risk');
@@ -1419,14 +1475,14 @@
             .attr('stroke',           d => d.data._newHire ? NEWHIRE_STROKE : (d.data._filledBy ? FILLED_STROKE : (d.data._vacant ? '#e74c3c' : '#fff')))
             .attr('stroke-dasharray', d => (d.data._vacant && !d.data._filledBy && !d.data._newHire) ? '2.5,2' : null)
             .attr('stroke-width',     d => (d.data._vacant || d.data._filledBy || d.data._newHire) ? 2 : (d.depth === 0 ? 3 : 1.5));
-          nodeG.style('opacity', d => orph.has(d.data.talent_role_id) ? 0.4 : 1);
+          nodeG.style('opacity', d => orph.has(d.data.talent_role_id) ? 0.4 : (d._connect ? 0.35 : 1));
           linkPaths
             .attr('stroke',         d => orph.has(d.target.data.talent_role_id) ? '#e74c3c' : '#ccc')
             .attr('stroke-opacity', d => orph.has(d.target.data.talent_role_id) ? 0.5 : 1);
         };
 
         const clearScenarioPaint = () => {
-          nodeG.style('opacity', 1);
+          nodeG.style('opacity', d => d._connect ? 0.35 : 1);   // keep lens connectors faint
           linkPaths.attr('stroke', '#ccc').attr('stroke-opacity', 1);
           nodeG.selectAll('circle:not(.to-node-circle)')
             .attr('fill',             d => nodeColor(d))
@@ -1839,7 +1895,7 @@
         syncPlacements();   // rehydrate placements after a Looker re-render
 
         const paintFit = () => {
-          nodeG.style('opacity', 1);
+          nodeG.style('opacity', d => d._connect ? 0.35 : 1);   // keep lens connectors faint
           linkPaths.attr('stroke', '#ccc').attr('stroke-opacity', 1);
           nodeG.selectAll('circle:not(.to-node-circle)')
             .attr('fill',             d => nodeColor(d))
@@ -2761,6 +2817,22 @@
         // Run the whole optimization in one click. The search is synchronous, so the
         // "working" label is painted first and the work deferred a tick — otherwise the
         // button would still read "Auto-Optimize" while the thread is blocked.
+        // Lens toggles. They change only which roles are DRAWN — the summary, the optimizer
+        // and the scenario engine keep working on the whole organisation, so switching one
+        // on never silently narrows an analysis.
+        const applyLens = () => {
+          btnMcp.classList.toggle('lens-on', self._onlyMcp);
+          btnTalent.classList.toggle('lens-on', self._onlyTalent);
+          self._hideEmployeeCard();
+          self._action.classList.remove('visible');
+          self._focusId = null;        // a focus chosen under the old lens may not survive it
+          self._expanded.clear();
+          self._collapsed.clear();
+          redraw(true);
+        };
+        btnMcp.onclick = () => { self._onlyMcp = !self._onlyMcp; applyLens(); };
+        btnTalent.onclick = () => { self._onlyTalent = !self._onlyTalent; applyLens(); };
+
         btnAuto.onclick = () => {
           if (!self._fitMode || btnAuto.disabled) return;
           self._hideEmployeeCard();
