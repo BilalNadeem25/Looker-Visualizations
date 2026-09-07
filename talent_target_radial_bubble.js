@@ -213,6 +213,49 @@
   .nx-bar i{display:block; height:100%; border-radius:5px}
   .nx-subrow{display:flex; justify-content:space-between; font-size:12px; color:#5a6472; padding:4px 0 4px 14px}
   .nx-subrow .ss{color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums}
+  /* ---- competency lens: tickable sub-competency rows ----
+     The sub-rows were already the right place to choose from, so they become the control rather
+     than gaining a separate picker elsewhere. Kept visually near-identical to the plain rows so
+     three cards of these do not read as a wall of checkboxes — the tick box only fills in once
+     something is selected. */
+  button.nx-subrow{width:100%; align-items:center; gap:8px; border:none; background:none;
+    font-family:inherit; text-align:left; cursor:pointer; border-radius:6px}
+  button.nx-subrow:hover{background:var(--line-soft)}
+  button.nx-subrow:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+  .nx-subrow .sn{flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nx-tick{flex:0 0 auto; width:12px; height:12px; border:1px solid #c3ccd8; border-radius:3px; display:inline-block; position:relative}
+  button.nx-subrow.on .nx-tick{background:var(--accent); border-color:var(--accent)}
+  button.nx-subrow.on .nx-tick:after{content:""; position:absolute; left:3px; top:1px; width:4px; height:7px;
+    border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(40deg)}
+  button.nx-subrow.on{color:var(--accent)}
+  button.nx-subrow.on .sn{font-weight:700}
+
+  /* ---- the lens panel: full width above the cards ---- */
+  .nx-lens{grid-column:1 / -1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px}
+  .nx-lens-hd{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+  .nx-lens-t{font-size:13px; font-weight:800; color:var(--ink)}
+  .nx-lens-clear{margin-left:auto; border:1px solid var(--line); background:#fff; color:var(--muted);
+    font-size:11px; font-weight:700; border-radius:8px; padding:3px 9px; cursor:pointer}
+  .nx-lens-clear:hover{color:var(--ink); border-color:#c3ccd8}
+  .nx-lens-say{font-size:13px; color:var(--ink); line-height:1.55}
+  .nx-lens-note{font-size:12px; color:var(--muted); margin-top:5px; line-height:1.5}
+  .nx-lens-rank{margin:12px 0 4px}
+  .nx-lens-rk{display:flex; align-items:center; gap:9px; font-size:12.5px; padding:3px 0}
+  .nx-lens-rk .rn{width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink)}
+  .nx-lens-rk .rb{height:6px; border-radius:3px; background:var(--accent)}
+  .nx-lens-rk .rv{color:var(--muted); font-variant-numeric:tabular-nums}
+  .nx-lrow{display:flex; align-items:flex-start; gap:12px; height:44px}
+  .nx-lrow .ll{width:150px; flex:0 0 auto; text-align:right; padding-top:5px}
+  .nx-lrow .ln{font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nx-lrow .lq{font-size:10px; color:#9aa4b0}
+  .nx-lrow .lt{flex:1 1 auto; min-width:0; position:relative; height:44px}
+  .nx-lrail{position:absolute; top:13px; left:10px; right:10px; height:4px; border-radius:2px; background:var(--line)}
+  .nx-lspan{position:absolute; top:13px; height:4px; border-radius:2px; background:#c3ccd8}
+  .nx-ldot{position:absolute; top:5px; width:20px; height:20px; margin-left:-10px; border-radius:50%; box-sizing:border-box;
+    border:2px solid var(--panel); background:#5a6472; color:#fff; font-size:10px; line-height:16px; text-align:center; font-weight:700}
+  .nx-lval{position:absolute; top:28px; width:28px; margin-left:-14px; text-align:center; font-size:10px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .nx-lsp{width:92px; flex:0 0 auto; text-align:right; font-size:12px; color:var(--ink); padding-top:5px}
+  .nx-lsp i{display:block; font-style:normal; font-size:10px; color:#9aa4b0; font-weight:400}
   .nx-skill{display:flex; align-items:center; gap:8px; padding:8px 0; font-size:13px; border-top:1px solid var(--line-soft)}
   .nx-skill:first-of-type{border-top:none}
   .nx-skill .nm{font-weight:500}
@@ -436,6 +479,10 @@
         // folded: it is PII that nobody needs on screen by default, and unfolded it would push
         // the competency and skill rows of a three-card comparison out of view.
         collapsed: { Personal: true },
+        // Competency lens: which sub-competencies the user has ticked to compare on, keyed by
+        // NAME rather than by any per-role id. Name is the only key shared across cards, so a
+        // tick survives comparing people assessed against different target roles.
+        pickedComp: {},
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
@@ -550,6 +597,18 @@
           if (npk && st.selectedPairs.indexOf(npk) < 0) st.selectedPairs.push(npk);
           st.openMenuPk = null; self._draw(); return;
         }
+        // Tested before [data-collapse]: a sub-row sits inside a collapsible body, and the
+        // quadrant header is a separate element, so these never overlap — but ordering it first
+        // keeps it that way if the markup nests differently later.
+        var cmp = e.target.closest("[data-comp]");
+        if (cmp) {
+          var cn = cmp.getAttribute("data-comp");
+          if (st.pickedComp[cn]) delete st.pickedComp[cn]; else st.pickedComp[cn] = true;
+          self._renderPanels();                 // cards + lens only; the chart is unaffected
+          return;
+        }
+        var lclr = e.target.closest(".nx-lens-clear");
+        if (lclr) { st.pickedComp = {}; self._renderPanels(); return; }
         var hd = e.target.closest("[data-collapse]");
         if (hd) {
           var k = hd.getAttribute("data-collapse");
@@ -1296,11 +1355,174 @@
         panel.innerHTML = '<div class="nx-empty"><p>Click employee bubbles to view and compare profiles. Use ＋ role on a card to compare one person across roles.</p></div>';
         return;
       }
+      var emps = st.selectedPairs.map(function (pk) { return st.byPair[pk]; })
+                                 .filter(function (e) { return !!e; });
       var cols = st.selectedPairs.map(function (pk) {
         var emp = st.byPair[pk]; if (!emp) return "";
         return '<div class="nx-cardcol"><button class="nx-cardremove" data-pk="' + esc(pk) + '" title="Remove from comparison">&times;</button>' + self._cardHTML(emp) + '</div>';
       }).join("");
-      panel.innerHTML = cols || '<div class="nx-empty"><p>Click employee bubbles to compare.</p></div>';
+      // The lens spans the full grid above the cards, so the ticked competencies and the cards
+      // they were ticked in stay on screen together.
+      panel.innerHTML = cols
+        ? this._renderLens(emps) + cols
+        : '<div class="nx-empty"><p>Click employee bubbles to compare.</p></div>';
+    },
+
+    // ---- competency lens -----------------------------------------------------
+    // Ordinal words for the rank-change sentence. Beyond a handful of cards the panel is
+    // unreadable anyway, so a short table beats Intl plumbing.
+    _ORD: ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"],
+    // Dense ranking: equal scores share a rank, which is the whole point — two people level on
+    // the selected competencies must not be separated by an arbitrary tiebreak.
+    _rankOf: function (vals) {
+      var sorted = vals.slice().sort(function (a, b) { return b - a; });
+      return vals.map(function (v) { return sorted.indexOf(v) + 1; });
+    },
+    // One row of the lens: every card's score on one competency, on a shared 0-100 track.
+    //
+    // Deliberately NOT colour-coded by person. The number of cards is user-controlled and
+    // unbounded, and a categorical palette assigned by position would repaint everyone whenever a
+    // card is removed. Identity rides on the initials inside each dot instead — text, so it also
+    // survives colour blindness and greyscale printing.
+    _lensRow: function (name, quad, emps) {
+      var scored = emps.filter(function (e) { return e.beh && e.beh[name] != null; });
+      if (!scored.length) {
+        return '<div class="nx-lrow"><div class="ll"><div class="ln" title="' + esc(name) + '">' + esc(name) + '</div>' +
+               '<div class="lq">' + esc(quad || "") + '</div></div>' +
+               '<div class="lt"><div class="nx-lval" style="left:0;width:auto;margin-left:10px;top:13px">' +
+               'Not assessed for anyone on screen</div></div><div class="nx-lsp"></div></div>';
+      }
+      var vals = scored.map(function (e) { return e.beh[name]; });
+      var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), sp = mx - mn;
+      // Beeswarm nudge: tied or near-tied dots sit shoulder to shoulder rather than one hiding
+      // the other. Costs a few points of positional accuracy on a cluster; a concealed dot costs
+      // the whole comparison.
+      var pts = scored.map(function (e, i) { return { e: e, v: vals[i] }; })
+                      .sort(function (a, b) { return a.v - b.v; });
+      var GAP = 5.6;   // percent of track width ~ one dot plus breathing room
+      var last = -99;
+      pts.forEach(function (p) {
+        p.pos = Math.max(p.v, last + GAP);
+        last = p.pos;
+      });
+      // The pass above only ever pushes right, so a cluster at the top of the scale would walk
+      // off the end of the track — two people tied on 100 put the second at 105.6%. Slide the
+      // whole cluster back instead, which keeps the spacing and every dot on the rail.
+      if (last > 100) {
+        var back = last - 100;
+        pts.forEach(function (p) { p.pos = Math.max(0, p.pos - back); });
+      }
+      var span = Math.max(0, pts[pts.length - 1].pos - pts[0].pos);
+      var dots = pts.map(function (p) {
+        var L = "calc(10px + " + p.pos.toFixed(2) + "% - " + (p.pos * 0.2).toFixed(2) + "px)";
+        return '<div class="nx-ldot" style="left:' + L + '" title="' + esc(p.e.name) + ' — ' +
+                 esc(name) + ': ' + Math.round(p.v) + '%">' + esc(initials(p.e.name)) + '</div>' +
+               '<div class="nx-lval" style="left:' + L + '">' + Math.round(p.v) + '</div>';
+      }).join("");
+      var lead = scored.filter(function (e) { return e.beh[name] === mx; });
+      var missing = emps.length - scored.length;
+      // "All level" and "only one person has a score" both produce a zero spread, and calling the
+      // second one level would be a flat lie. Say which it is.
+      var verdict = scored.length === 1
+        ? "only " + esc(scored[0].name.split(/\s+/)[0])
+        : sp === 0 ? "all level"
+        : lead.length > 1 ? "tied lead"
+        : esc(lead[0].name.split(/\s+/)[0]) + " leads";
+      if (missing > 0 && scored.length > 1) verdict += " · " + missing + " n/a";
+      return '<div class="nx-lrow"><div class="ll"><div class="ln" title="' + esc(name) + '">' + esc(name) + '</div>' +
+        '<div class="lq">' + esc(quad || "") + '</div></div>' +
+        '<div class="lt"><div class="nx-lrail"></div>' +
+          '<div class="nx-lspan" style="left:calc(10px + ' + pts[0].pos.toFixed(2) + '%); width:' + span.toFixed(2) + '%"></div>' +
+          dots +
+        '</div>' +
+        '<div class="nx-lsp">' + (scored.length === 1 ? "&mdash;" : sp + " pts") + '<i>' + verdict + '</i></div></div>';
+    },
+    _renderLens: function (emps) {
+      var self = this, st = this.state;
+      var names = Object.keys(st.pickedComp).filter(function (n) { return st.pickedComp[n]; });
+      if (!names.length || emps.length < 2) return "";
+      // Quadrant for the row label, taken from whichever card carries the competency.
+      var quadOf = {};
+      emps.forEach(function (e) {
+        (e.subcompetencies || []).forEach(function (s) {
+          if (s && s.name != null && quadOf[s.name] == null) quadOf[s.name] = s.quadrant || s.parent || "";
+        });
+      });
+      // Keep the ticked order stable and readable: quadrant, then name — the same order the cards
+      // list them in, so the lens rows line up with where the ticks were made.
+      var order = { "Leadership": 0, "Agility": 1, "Cultural Fit": 2 };
+      names.sort(function (a, b) {
+        var qa = order[quadOf[a]] == null ? 9 : order[quadOf[a]];
+        var qb = order[quadOf[b]] == null ? 9 : order[quadOf[b]];
+        return qa !== qb ? qa - qb : a.localeCompare(b);
+      });
+
+      // Subset score: the mean over the ticked competencies THIS person has a score for. Averaged
+      // over their own count, not the tick count, so someone assessed against a different role is
+      // not punished for a competency their role never measured.
+      var scores = emps.map(function (e) {
+        var s = 0, n = 0;
+        names.forEach(function (nm) { var v = e.beh && e.beh[nm]; if (v != null) { s += v; n++; } });
+        return { e: e, v: n ? s / n : null, n: n };
+      });
+      var have = scores.filter(function (x) { return x.v != null; });
+      var rows = names.map(function (nm) { return self._lensRow(nm, quadOf[nm], emps); }).join("");
+
+      // First names throughout. The full names on these cards run to six words, and a sentence
+      // that opens with one and closes with a first name reads like two different people.
+      var first = function (e) { return esc(e.name.split(/\s+/)[0]); };
+      var say, note = "";
+      if (!have.length) {
+        say = "None of these people is assessed on the competenc" + (names.length === 1 ? "y" : "ies") + " you picked";
+      } else if (have.length === 1) {
+        say = "Only " + first(have[0].e) + " is assessed on this selection, so there is nothing to compare yet";
+      } else {
+        var top = have.slice().sort(function (a, b) { return b.v - a.v; });
+        var best = top[0].v, worst = top[top.length - 1].v;
+        var leads = top.filter(function (x) { return x.v === best; });
+        say = (leads.length > 1
+                ? leads.map(function (x) { return first(x.e); }).join(" and ") + " tie at " + Math.round(best) + "%"
+                : first(top[0].e) + " leads at " + Math.round(best) + "%");
+        if (worst < best) {
+          say += "; " + first(top[top.length - 1].e) + " trails by " + Math.round(best - worst) + " pts";
+        }
+        if (leads.length === have.length) {
+          // Everyone level. Dense ranking makes them all 1st, which technically "moves" whoever
+          // was last on role fit up to 1st — so the re-order sentence below would claim a
+          // distinction this selection cannot actually draw.
+          note = "Identical on this selection — it cannot separate them. Tick a competency with a " +
+                 "spread to find where they differ.";
+        } else {
+          // Does the lens disagree with the headline? This is the payoff: it says out loud that
+          // the role-fit ordering is only one defensible order, and names who moves under this one.
+          var rl = this._rankOf(have.map(function (x) { return x.v; }));
+          var rf = this._rankOf(have.map(function (x) { return x.e.roleFit; }));
+          var moves = have.map(function (x, i) { return { n: first(x.e), from: rf[i], to: rl[i] }; })
+                          .filter(function (m) { return m.from !== m.to; })
+                          .sort(function (a, b) { return Math.abs(b.from - b.to) - Math.abs(a.from - a.to); });
+          note = moves.length
+            ? "This lens re-orders the shortlist: <b>" + moves[0].n + "</b> moves from " +
+              this._ORD[moves[0].from - 1] + " on overall role fit to " + this._ORD[moves[0].to - 1] + " here."
+            : "Same order as overall role fit — this lens confirms the shortlist rather than changing it.";
+        }
+      }
+      var maxv = have.length ? Math.max.apply(null, have.map(function (x) { return x.v; })) : 100;
+      var bars = have.slice().sort(function (a, b) { return b.v - a.v; }).map(function (x) {
+        return '<div class="nx-lens-rk"><span class="rn" title="' + esc(x.e.name) + '">' + first(x.e) + '</span>' +
+          '<span class="rb" style="width:' + Math.round(x.v / (maxv || 100) * 160) + 'px"></span>' +
+          '<span class="rv">' + Math.round(x.v) + '%' + (x.n < names.length ? " · " + x.n + " of " + names.length : "") +
+          '</span></div>';
+      }).join("");
+
+      return '<div class="nx-lens">' +
+        '<div class="nx-lens-hd"><span class="nx-lens-t">Comparing on ' + names.length +
+          ' competenc' + (names.length === 1 ? "y" : "ies") + '</span>' +
+          '<button type="button" class="nx-lens-clear">Clear</button></div>' +
+        '<div class="nx-lens-say">' + say + '.</div>' +
+        (bars ? '<div class="nx-lens-rank">' + bars + '</div>' : "") +
+        (note ? '<div class="nx-lens-note">' + note + '</div>' : "") +
+        '<div style="margin-top:12px">' + rows + '</div>' +
+      '</div>';
     },
 
     _cardHTML: function (emp) {
@@ -1332,7 +1554,14 @@
       var quadHtml = quadOrder.map(function (q) {
         var score = Math.round(emp.quadrants[q] || 0), col = self._color(emp.quadrants[q] || 0);
         var subs = (byQuad[q] || []).map(function (s) {
-          return '<div class="nx-subrow"><span>' + esc(s.name) + '</span><span class="ss">' + Math.round(s.weighted_score || 0) + '%</span></div>';
+          // Tickable: this row is how the comparison lens is chosen. Keyed by name and toggled
+          // globally, so ticking Support on any one card lights it on all of them — the lens is a
+          // property of the competency, not of the person whose card you happened to click.
+          var on = !!st.pickedComp[s.name];
+          return '<button type="button" class="nx-subrow' + (on ? ' on' : '') + '" data-comp="' + esc(s.name) +
+                 '" aria-pressed="' + (on ? 'true' : 'false') + '" title="Compare everyone on ' + esc(s.name) + '">' +
+                 '<i class="nx-tick"></i><span class="sn">' + esc(s.name) + '</span>' +
+                 '<span class="ss">' + Math.round(s.weighted_score || 0) + '%</span></button>';
         }).join("");
         return '<div class="nx-quad' + (collapsed[q] ? ' is-collapsed' : '') + '">' +
                  '<div class="nx-quadhead" data-collapse="' + esc(q) + '">' +
