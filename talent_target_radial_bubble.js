@@ -151,7 +151,12 @@
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
   .nx-zoom button{width:30px; height:30px; border:1px solid var(--line); background:rgba(255,255,255,.95); border-radius:8px; font-size:17px; font-weight:700; line-height:1; color:var(--ink); cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 3px rgba(20,30,45,.08)}
   .nx-zoom button:hover{border-color:#c3ccd8}
-  .nx-ring{fill:none; stroke:var(--line); stroke-width:1}
+  /* Orbit rings — the 25/50/75% match bands. Deliberately stronger than a gridline would be:
+     these carry the chart's scale rather than sitting behind it as furniture, and at --line
+     (#e7ebf1) they were all but invisible on the white panel. #8c96a3 reads clearly while
+     staying well behind the dots and the ink. Dashed so a ring never looks like a boundary a
+     bubble is resting on — the bubbles cross them freely. */
+  .nx-ring{fill:none; stroke:#8c96a3; stroke-width:1.4; stroke-dasharray:5 4}
   .nx-bubble{cursor:pointer}
   .nx-bubble circle{transition:cx .55s cubic-bezier(.22,.61,.36,1), cy .55s cubic-bezier(.22,.61,.36,1), r .15s, stroke-width .15s}
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
