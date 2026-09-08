@@ -1418,12 +1418,18 @@
             .separation((a, b) => (a.parent === b.parent ? 1 : 2) / Math.max(1, a.depth));
           treeLayout(viewRoot);
 
+          // Depth orbits. non-scaling-stroke is what actually makes these readable: the
+          // rings live in chart space, so a plain 1px stroke thins to a fifth of a pixel
+          // once a large org is scaled to fit, which is why they used to all but vanish.
+          // With it, the line and its dashes hold the same weight on screen at every zoom
+          // level — the behaviour you want from a gridline.
           const depths = [...new Set(viewRoot.descendants().map(d => d.depth))].filter(d => d > 0);
           depths.forEach(depth => {
             ringG.append('circle')
               .attr('r', (depth / Math.max(1, viewRoot.height)) * radius)
-              .attr('fill', 'none').attr('stroke', '#e8e8e8')
-              .attr('stroke-width', 1).attr('stroke-dasharray', '3,3');
+              .attr('fill', 'none').attr('stroke', '#b4bec9')
+              .attr('stroke-width', 1.4).attr('stroke-dasharray', '6,5')
+              .attr('vector-effect', 'non-scaling-stroke');
           });
 
           linkPaths = lg.selectAll('path').data(viewRoot.links()).join('path')
