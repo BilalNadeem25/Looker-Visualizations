@@ -84,6 +84,38 @@
                        // are talent_profiles enums.
                        "willingness_for_mobility","vacancy_risk","duration_in_company","years_of_experience"];
 
+  // ---- saved views: storage -------------------------------------------------
+  // The app-side sidebar persists its saved filters through /api/talenttarget/filter; a Looker
+  // tile has no per-user endpoint of its own to write to, so named views live in this browser's
+  // localStorage instead. They are therefore personal to the browser and do not follow the user
+  // to another machine — which is exactly what the dropdown says when storage is unavailable.
+  //
+  // Looker renders custom visualizations inside a sandboxed iframe, and on builds where that
+  // sandbox withholds allow-same-origin, merely TOUCHING window.localStorage throws a
+  // SecurityError. Hence the try/catch around reads as well as writes, and the in-memory
+  // fallback: the feature degrades to session-only rather than breaking the toolbar outright.
+  var VIEWS_KEY = "nsia_radial_bubble.savedViews.v1";
+  var memViews = null;                       // non-null once localStorage has failed us once
+  function viewsAvailable(){ return memViews === null; }
+  function viewsRead(){
+    if (memViews) return memViews.slice();
+    try {
+      var list = JSON.parse(window.localStorage.getItem(VIEWS_KEY) || "[]");
+      if (!Array.isArray(list)) return [];
+      // Anything hand-edited, half-written or left by an older key shape is dropped rather than
+      // handed to _applyView, which would then read `view` off undefined.
+      return list.filter(function(f){ return f && typeof f.name === "string" && f.name && f.view && typeof f.view === "object"; });
+    } catch(e){ memViews = []; return []; }
+  }
+  function viewsWrite(list){
+    if (viewsAvailable()) {
+      try { window.localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); return true; }
+      catch(e){ memViews = []; }             // quota, private mode, or a same-origin-less sandbox
+    }
+    memViews = list.slice();
+    return false;                            // false = this session only; surfaced in the dropdown
+  }
+
   var STYLES = `
   .nx-wrap{
     --ground:#f5f7fa; --panel:#ffffff; --ink:#1b2431; --muted:#6b7684;
@@ -138,6 +170,63 @@
   .nx-chip{display:inline-flex; align-items:center; gap:6px}
   .nx-chip i{width:11px; height:11px; border-radius:50%; display:inline-block}
 
+  /* ---- saved views ----
+     Rebuilding a particular combination of toolbar controls by hand every morning is the thing
+     people quietly stop doing, so a view is a named snapshot of all of them at once. Styled as a
+     select rather than a button because that is how it behaves, and the toolbar already speaks
+     that idiom. The dropdown mirrors the app-side SaveFilterSection: a save action on top, a
+     divider, then the list with the applied one ticked. */
+  .nx-savedfield{position:relative}
+  .nx-savedtoggle{display:flex; align-items:center; gap:8px; font-size:14px; padding:7px 11px;
+    border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink);
+    min-width:190px; max-width:260px; cursor:pointer; text-align:left}
+  .nx-savedtoggle:hover:not(:disabled){border-color:#c3ccd8}
+  .nx-savedtoggle.on{border-color:var(--accent); color:var(--accent); background:var(--accent-soft)}
+  .nx-savedtoggle:disabled{opacity:.5; cursor:not-allowed}
+  .nx-savedtoggle:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .nx-savedlbl{flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .nx-savedright{flex:0 0 auto; display:flex; align-items:center; gap:5px}
+  .nx-savedclear{display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px;
+    border-radius:50%; font-size:13px; line-height:1; opacity:.55}
+  .nx-savedclear:hover{opacity:1; background:rgba(53,80,125,.14)}
+  .nx-savedchev{font-size:12px; line-height:1; transition:transform .2s}
+  .nx-savedchev.up{transform:rotate(180deg)}
+  .nx-saveddrop{position:absolute; z-index:9; top:100%; left:0; margin-top:5px; min-width:252px; max-width:330px;
+    background:#fff; border:1px solid var(--line); border-radius:11px; box-shadow:0 10px 28px rgba(20,30,45,.18);
+    padding:5px; max-height:290px; overflow:auto}
+  .nx-saveddrop[hidden]{display:none}
+  .nx-savednew{display:flex; align-items:center; gap:7px; width:100%; border:none; background:none;
+    padding:8px 9px; border-radius:8px; font-size:12.5px; font-weight:700; color:var(--accent);
+    cursor:pointer; text-align:left}
+  .nx-savednew:hover{background:var(--accent-soft)}
+  .nx-saveddiv{height:1px; background:var(--line); margin:4px 2px}
+  .nx-savedrow{display:flex; flex-direction:column; gap:6px; padding:7px 8px}
+  .nx-savedinput{width:100%; font-size:12.5px; padding:6px 8px; border:1px solid var(--line);
+    border-radius:8px; color:var(--ink); background:#fff; outline:none}
+  .nx-savedinput:focus{border-color:var(--accent)}
+  .nx-savedbtns{display:flex; gap:6px}
+  .nx-savedbtn{flex:1 1 0; padding:6px 0; border-radius:8px; border:1px solid var(--line); background:#fff;
+    color:var(--ink); font-size:12px; font-weight:700; cursor:pointer}
+  .nx-savedbtn:hover:not(:disabled){border-color:var(--accent); color:var(--accent)}
+  .nx-savedbtn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .nx-savedbtn.primary:hover:not(:disabled){opacity:.88; color:#fff}
+  .nx-savedbtn:disabled{opacity:.45; cursor:not-allowed}
+  .nx-savedopt{display:flex; align-items:center; gap:6px; padding:7px 9px; border-radius:8px;
+    font-size:12.5px; color:var(--ink); cursor:pointer}
+  .nx-savedopt:hover{background:var(--line-soft)}
+  .nx-savedopt.on{color:var(--accent); font-weight:700}
+  .nx-savedtick{flex:0 0 11px; font-size:11px}
+  .nx-savedname{flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* Faded rather than hover-only: a delete that appears on hover does not exist on a touch
+     screen, and a saved view you cannot remove is a permanent mistake. */
+  .nx-saveddel{flex:0 0 auto; border:none; background:none; color:#9aa4b0; font-size:15px; line-height:1;
+    cursor:pointer; padding:0 2px; opacity:.35}
+  .nx-savedopt:hover .nx-saveddel{opacity:.7}
+  .nx-saveddel:hover{opacity:1; color:var(--neg)}
+  .nx-savednote{padding:9px 10px; font-size:11.5px; color:#9aa4b0; text-align:center}
+  .nx-savedwarn{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft);
+    font-size:11px; color:var(--neg); line-height:1.45}
+
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
      paint before the tile has a resolved height). _sizeChart() overrides the height below from
@@ -151,12 +240,7 @@
   .nx-zoom{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:6px; z-index:3}
   .nx-zoom button{width:30px; height:30px; border:1px solid var(--line); background:rgba(255,255,255,.95); border-radius:8px; font-size:17px; font-weight:700; line-height:1; color:var(--ink); cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 3px rgba(20,30,45,.08)}
   .nx-zoom button:hover{border-color:#c3ccd8}
-  /* Orbit rings — the 25/50/75% match bands. Deliberately stronger than a gridline would be:
-     these carry the chart's scale rather than sitting behind it as furniture, and at --line
-     (#e7ebf1) they were all but invisible on the white panel. #8c96a3 reads clearly while
-     staying well behind the dots and the ink. Dashed so a ring never looks like a boundary a
-     bubble is resting on — the bubbles cross them freely. */
-  .nx-ring{fill:none; stroke:#8c96a3; stroke-width:1.4; stroke-dasharray:5 4}
+  .nx-ring{fill:none; stroke:var(--line); stroke-width:1}
   .nx-bubble{cursor:pointer}
   .nx-bubble circle{transition:cx .55s cubic-bezier(.22,.61,.36,1), cy .55s cubic-bezier(.22,.61,.36,1), r .15s, stroke-width .15s}
   .nx-bubble:hover circle{stroke:var(--ink); stroke-width:2}
@@ -399,6 +483,14 @@
           '<label>Complement pool</label>' +
           '<select class="nx-select nx-scope"></select>' +
         '</div>' +
+        '<div class="nx-field nx-savedfield">' +
+          '<label>Saved views</label>' +
+          '<button type="button" class="nx-savedtoggle" disabled>' +
+            '<span class="nx-savedlbl">None applied</span>' +
+            '<span class="nx-savedright"></span>' +   // ✕ + chevron, filled by _renderSavedViews
+          '</button>' +
+          '<div class="nx-saveddrop" hidden></div>' +
+        '</div>' +
         '<span class="nx-rolelbl"></span>' +
         '<span class="nx-count"></span>' +
         '<div class="nx-legend"></div>' +   // filled by _renderLegend — the bands swap out when unscored
@@ -465,7 +557,12 @@
         searchLbl: q(".nx-searchlbl"),
         scope: q(".nx-scope"),
         legend: q(".nx-legend"),
-        zoom: q(".nx-zoom")
+        zoom: q(".nx-zoom"),
+        savedField: q(".nx-savedfield"),
+        savedToggle: q(".nx-savedtoggle"),
+        savedLbl: q(".nx-savedlbl"),
+        savedRight: q(".nx-savedright"),
+        savedDrop: q(".nx-saveddrop")
       };
       this.state = {
         employees: [], roleKey: null, rolesInView: [], byPair: {}, rolesByUser: {}, userIds: [],
@@ -493,9 +590,18 @@
         // NAME rather than by any per-role id. Name is the only key shared across cards, so a
         // tick survives comparing people assessed against different target roles.
         pickedComp: {},
+        // Saved views. savedViews is the persisted list (read once here, not per render);
+        // activeView names the one last applied or saved, and is what the toggle displays.
+        // savedOpen / savedNaming / savedName are pure UI: the dropdown, and whether it is
+        // currently showing the name box instead of the save action.
+        savedViews: [], activeView: null, savedOpen: false, savedNaming: false, savedName: "",
+        savedPersisted: true,
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
+
+      st.savedViews = viewsRead().sort(function (a, b) { return a.name.localeCompare(b.name); });
+      st.savedPersisted = viewsAvailable();
 
       $.slider.addEventListener("input", function () {
         st.maxRoleFit = Number($.slider.value); $.sliderVal.textContent = $.slider.value; self._draw();
@@ -556,6 +662,40 @@
         st.simScopeAuto = false;   // pinned by hand — search here, do not re-cascade
         self._resetPool(); self._draw();
       });
+      // ---- saved views ----
+      // The ✕ lives INSIDE the toggle, so it has to be tested before the open/close it would
+      // otherwise trigger. No stopPropagation: this is one listener, not two.
+      $.savedToggle.addEventListener("click", function (e) {
+        if (e.target.closest(".nx-savedclear")) { self._clearActiveView(); return; }
+        st.savedOpen = !st.savedOpen;
+        if (!st.savedOpen) { st.savedNaming = false; st.savedName = ""; }
+        self._renderSavedViews();
+      });
+      $.savedDrop.addEventListener("click", function (e) {
+        var t = e.target;
+        if (t.closest(".nx-savednew")) { st.savedNaming = true; st.savedName = ""; self._renderSavedViews(); return; }
+        if (t.closest(".nx-savedsave")) { self._saveCurrentView(st.savedName); return; }
+        if (t.closest(".nx-savedcancel")) { st.savedNaming = false; st.savedName = ""; self._renderSavedViews(); return; }
+        // Before the row, which encloses it — clicking delete must not also apply the view.
+        var del = t.closest(".nx-saveddel");
+        if (del) { self._deleteView(del.getAttribute("data-name")); return; }
+        var row = t.closest(".nx-savedopt");
+        if (row) self._applyView(row.getAttribute("data-name"));
+      });
+      // Delegated, because the input is rebuilt by every render of the dropdown.
+      $.savedDrop.addEventListener("input", function (e) {
+        if (!e.target.classList.contains("nx-savedinput")) return;
+        st.savedName = e.target.value;
+        // Only the Save button depends on this. Re-rendering the dropdown here would replace the
+        // input mid-keystroke and take the caret with it.
+        var b = $.savedDrop.querySelector(".nx-savedsave");
+        if (b) b.disabled = !clean(st.savedName);
+      });
+      $.savedDrop.addEventListener("keydown", function (e) {
+        if (!e.target.classList.contains("nx-savedinput")) return;
+        if (e.key === "Enter") { e.preventDefault(); self._saveCurrentView(st.savedName); }
+        else if (e.key === "Escape") { e.preventDefault(); st.savedNaming = false; st.savedName = ""; self._renderSavedViews(); }
+      });
       $.zoom.addEventListener("click", function (e) {
         var b = e.target.closest("button"); if (!b) return;
         var z = b.getAttribute("data-z");
@@ -585,6 +725,12 @@
         window.addEventListener("pointerup", function () { st.panning = false; });
         // click anywhere outside an open role menu closes it
         window.addEventListener("pointerdown", function (e) {
+          // Same for the saved-views dropdown. pointerdown runs before the toggle's own click,
+          // so a click ON the toggle is excluded here and left to that handler to toggle.
+          if (st.savedOpen && !(e.target.closest && e.target.closest(".nx-savedfield"))) {
+            st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+            self._renderSavedViews();
+          }
           if (!st.openMenuPk) return;
           if (e.target.closest && (e.target.closest(".nx-rolemenu") || e.target.closest(".nx-addrole"))) return;
           st.openMenuPk = null; self._renderPanels();
@@ -634,6 +780,7 @@
         self._resetPool(); self._draw();
       });
 
+      this._renderSavedViews();   // disabled + "None applied" until the first rows land
       this._sizeChart();
       if (typeof ResizeObserver !== "undefined") {
         this._ro = new ResizeObserver(function () { self._sizeChart(); });
@@ -848,21 +995,8 @@
         st.openMenuPk = null;
         st.zoom = 1; st.panX = 0; st.panY = 0;
         st.animateIn = true;   // new population -> nodes glide in (consumed by _draw)
-        // default chart role = the one the most employees are assessed against. Unscored rows are
-        // excluded deliberately: they all share the reserved NO_ROLE id, and unfiltered they
-        // outnumber any single real role several times over — counting them would elect "no role"
-        // as the chart role and empty out simulate mode, whose every pool keys off chartRole.
-        var counts = {};
-        emps.forEach(function (e) { if (!e.unscored) counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
-        st.chartRole = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0] || null;
-
-        var cfgMax = Number(this._config.default_role_fit_max);
-        if (cfgMax > 0) {
-          st.maxRoleFit = Math.min(72, cfgMax);
-        } else {
-          var dataMax = emps.reduce(function (m, e) { return Math.max(m, e.roleFit || 0); }, 0);
-          st.maxRoleFit = Math.min(72, Math.max(1, Math.ceil(dataMax)));
-        }
+        st.chartRole = this._topRole();
+        st.maxRoleFit = this._defaultMaxRoleFit();
         // Chips survive a role change; the cards were just wiped two lines up. Reopen them, or
         // the search box would claim five people while the panel showed none. This also covers
         // filtering INTO a role from the idle view, where the cards could not open at the time.
@@ -871,10 +1005,7 @@
       } else {
         // keep only still-present selections and a valid chart role
         st.selectedPairs = st.selectedPairs.filter(function (pk) { return st.byPair[pk]; });
-        if (!roleNames[st.chartRole]) {
-          var c2 = {}; emps.forEach(function (e) { if (!e.unscored) c2[e.roleId] = (c2[e.roleId] || 0) + 1; });
-          st.chartRole = Object.keys(c2).sort(function (a, b) { return c2[b] - c2[a]; })[0] || null;
-        }
+        if (!roleNames[st.chartRole]) st.chartRole = this._topRole();
       }
 
       this.$.slider.value = st.maxRoleFit; this.$.sliderVal.textContent = st.maxRoleFit;
@@ -905,11 +1036,33 @@
       }
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
       this._renderTags(); this._renderSug();   // chips carry names, which only exist once rows land
+      this._renderSavedViews();                // the toggle unlocks as soon as there are rows
       // the role label and the legend are both set by _draw — they depend on the idle state
 
       this._sizeChart();
       this._draw();
       if (done) done();
+    },
+
+    // ---- opening defaults ----------------------------------------------------
+    // Both of these are what a fresh load lands on. They live here rather than inline in
+    // updateAsync because clearing a saved view has to put the toolbar back on exactly the same
+    // values — two copies of this arithmetic would drift apart the first time either changed.
+
+    // The role the most employees are assessed against. Unscored rows are excluded deliberately:
+    // they all share the reserved NO_ROLE id, and unfiltered they outnumber any single real role
+    // several times over — counting them would elect "no role" as the chart role and empty out
+    // simulate mode, whose every pool keys off chartRole.
+    _topRole: function () {
+      var counts = {};
+      this.state.employees.forEach(function (e) { if (!e.unscored) counts[e.roleId] = (counts[e.roleId] || 0) + 1; });
+      return Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0] || null;
+    },
+    _defaultMaxRoleFit: function () {
+      var cfgMax = Number(this._config && this._config.default_role_fit_max);
+      if (cfgMax > 0) return Math.min(72, cfgMax);
+      var dataMax = this.state.employees.reduce(function (m, e) { return Math.max(m, e.roleFit || 0); }, 0);
+      return Math.min(72, Math.max(1, Math.ceil(dataMax)));
     },
 
     // ---- match-score + band helpers ----------------------------------------
@@ -1135,6 +1288,217 @@
       // No pool key any more: simulate draws the pool and nothing else, so there is no second
       // brightness level left to explain.
       this.$.legend.innerHTML = bands;
+    },
+
+    // ---- saved views ----------------------------------------------------------
+    // A named snapshot of every control the user drives: the fit ceiling, who is chipped, the
+    // mode, the charted role, which cards are open, the competency-lens ticks, and the whole
+    // simulate setup (pool level, checked gaps, hand-picked complements, and whether each of
+    // those is still system-managed).
+    //
+    // Deliberately NOT the zoom/pan viewport. That is where you were looking, not what you were
+    // looking at, and restoring it would fight the re-framing _draw does when a view changes the
+    // population out from under it.
+    //
+    // Everything is stored under a key that survives a data refresh — user ids, the (user × role)
+    // pk, role ids, and competency / behaviour NAMES. Behaviour ids in particular are positional
+    // ("sb0", "sb1", …) and are rebuilt per charted role, so storing those would silently tick a
+    // different set of behaviours the next time the query came back with different rows.
+    _captureView: function () {
+      var st = this.state, nameOf = {};
+      st.behaviours.forEach(function (b) { nameOf[b.id] = b.name; });
+      return {
+        v: 1,
+        maxRoleFit: st.maxRoleFit,
+        mode: st.mode,
+        chartRole: st.chartRole,
+        searchIds: st.searchIds.slice(),
+        selectedPairs: st.selectedPairs.slice(),
+        pickedComp: Object.keys(st.pickedComp).filter(function (n) { return st.pickedComp[n]; }),
+        sim: {
+          scope: st.simScope,
+          scopeAuto: !!st.simScopeAuto,
+          auto: !!st.simAuto,
+          weak: Object.keys(st.simWeak)
+                      .filter(function (id) { return st.simWeak[id] && nameOf[id]; })
+                      .map(function (id) { return nameOf[id]; }),
+          complements: Object.keys(st.simComplements).filter(function (pk) { return st.simComplements[pk]; })
+        }
+      };
+    },
+
+    // Every restored reference is re-validated against the rows currently in view. A saved view
+    // outlives the query it was saved from: the tile's own Looker filter moves on, people leave,
+    // roles are retired. Restoring a chip for somebody the query no longer returns would filter
+    // the chart down to nothing with no visible cause.
+    _applyView: function (name) {
+      var st = this.state, $ = this.$;
+      var saved = st.savedViews.filter(function (f) { return f.name === name; })[0];
+      if (!saved) return;
+      var f = saved.view || {}, sim = f.sim || {};
+
+      st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+      st.activeView = saved.name;
+
+      // Mode first — _syncSuccessor, _openCardFor and the chip renderer all branch on it.
+      st.mode = f.mode === "simulate" ? "simulate" : "compare";
+      Array.prototype.forEach.call($.mode.querySelectorAll("button"), function (b) {
+        b.classList.toggle("on", b.getAttribute("data-mode") === st.mode);
+      });
+      $.wrap.classList.toggle("simmode", st.mode === "simulate");
+
+      // Role next: behaviours, every pool and each pk test below are scoped to it. A saved role
+      // that is no longer in view leaves the current one standing rather than emptying the chart.
+      if (f.chartRole && st.rolesInView.some(function (r) { return r.id === f.chartRole; })) st.chartRole = f.chartRole;
+      this._buildBehaviours();
+
+      var maxFit = Number(f.maxRoleFit);
+      if (isFinite(maxFit) && maxFit > 0) {
+        st.maxRoleFit = Math.max(1, Math.min(72, Math.round(maxFit)));
+        $.slider.value = st.maxRoleFit; $.sliderVal.textContent = st.maxRoleFit;
+      }
+
+      var known = {};
+      st.people.forEach(function (p) { known[p.userId] = 1; });
+      st.searchIds = (f.searchIds || []).map(String).filter(function (u) { return known[u]; });
+      if (st.mode === "simulate") st.searchIds = st.searchIds.slice(0, 1);   // the successor is one person
+
+      st.selectedPairs = (f.selectedPairs || []).filter(function (pk) { return st.byPair[pk]; });
+      st.openMenuPk = null;
+
+      st.pickedComp = {};
+      (f.pickedComp || []).forEach(function (n) { st.pickedComp[String(n)] = true; });
+
+      st.simScope = this._SCOPES.indexOf(sim.scope) >= 0 ? sim.scope : "department";
+      // A view that was still on the automatic pool / pick keeps deferring to it; one where the
+      // user had pinned either by hand stays pinned, so _resetPool below leaves it alone.
+      st.simScopeAuto = sim.scopeAuto !== false;
+      st.simAuto = sim.auto !== false;
+      st.simComplements = {};
+      (sim.complements || []).forEach(function (pk) {
+        var e = st.byPair[pk];
+        if (e && e.roleId === st.chartRole) st.simComplements[pk] = true;
+      });
+
+      // Resolve the successor from the chip before the gaps: _defaultWeak and _resetPool both
+      // read the focus.
+      this._syncSuccessor();
+
+      var idOf = {};
+      st.behaviours.forEach(function (b) { idOf[b.name] = b.id; });
+      st.simWeak = {};
+      (sim.weak || []).forEach(function (n) { var id = idOf[String(n)]; if (id) st.simWeak[id] = true; });
+      // Nothing survived the name lookup — a different role's behaviour set, or a view saved
+      // before a successor was chosen. Fall back to the three weakest, which is what entering
+      // simulate would have given anyway; an empty gap list makes every candidate qualify.
+      if (!Object.keys(st.simWeak).length) this._defaultWeak();
+
+      this._resetPool();   // a no-op while simAuto is false, i.e. when the view pinned its own picks
+      this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw();
+    },
+
+    // Upsert by name (case-insensitively). Saving over an existing name is the only way to
+    // UPDATE a view, and two rows reading identically in the list is worse than an overwrite.
+    _saveCurrentView: function (raw) {
+      var st = this.state, name = clean(raw).slice(0, 50);
+      if (!name) return;
+      var list = st.savedViews.filter(function (f) { return f.name.toLowerCase() !== name.toLowerCase(); });
+      list.push({ name: name, savedAt: Date.now(), view: this._captureView() });
+      list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+      st.savedViews = list;
+      st.savedPersisted = viewsWrite(list);
+      st.activeView = name;
+      st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+      this._renderSavedViews();
+    },
+
+    // Deleting the applied view drops the label only. The toolbar keeps whatever it is showing —
+    // resetting the chart as a side effect of tidying a list is not what anyone asked for; ✕ on
+    // the toggle is the control that does that.
+    _deleteView: function (name) {
+      var st = this.state;
+      st.savedViews = st.savedViews.filter(function (f) { return f.name !== name; });
+      st.savedPersisted = viewsWrite(st.savedViews);
+      if (st.activeView === name) st.activeView = null;
+      this._renderSavedViews();
+    },
+
+    // ✕ on the toggle, mirroring the app-side sidebar: a "back to the default view" button, not
+    // just "forget the name". Every control a view owns goes back where a fresh load would have
+    // left it — except zoom/pan, which no view touches either.
+    _clearActiveView: function () {
+      var st = this.state, $ = this.$;
+      st.activeView = null;
+      st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+
+      st.mode = "compare";
+      Array.prototype.forEach.call($.mode.querySelectorAll("button"), function (b) {
+        b.classList.toggle("on", b.getAttribute("data-mode") === "compare");
+      });
+      $.wrap.classList.remove("simmode");
+
+      st.chartRole = this._topRole();
+      this._buildBehaviours();
+      st.maxRoleFit = this._defaultMaxRoleFit();
+      $.slider.value = st.maxRoleFit; $.sliderVal.textContent = st.maxRoleFit;
+
+      st.searchIds = []; st.searchText = ""; $.search.value = ""; st.sugIdx = 0;
+      st.selectedPairs = []; st.openMenuPk = null; st.pickedComp = {};
+      st.simComplements = {}; st.simAuto = true; st.simScopeAuto = true;
+      this._syncSuccessor();       // clears simFocus / simFocusMissing off the emptied box
+      this._defaultWeak(); this._resetPool();
+
+      this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw();
+    },
+
+    _renderSavedViews: function () {
+      var st = this.state, $ = this.$;
+      // Nothing to snapshot and nothing to apply a snapshot to until rows land — the same guard
+      // the app-side section makes on an empty user list.
+      var ready = st.employees.length > 0;
+      $.savedToggle.disabled = !ready;
+      if (!ready) { st.savedOpen = false; st.savedNaming = false; }
+
+      $.savedToggle.classList.toggle("on", !!st.activeView);
+      $.savedLbl.textContent = st.activeView || "None applied";
+      $.savedLbl.title = st.activeView || "";
+      $.savedRight.innerHTML =
+        (st.activeView ? '<span class="nx-savedclear" title="Clear and reset the toolbar">&times;</span>' : "") +
+        '<span class="nx-savedchev' + (st.savedOpen ? " up" : "") + '">&#9662;</span>';
+
+      $.savedDrop.hidden = !st.savedOpen;
+      if (!st.savedOpen) { $.savedDrop.innerHTML = ""; return; }
+
+      var head = st.savedNaming
+        ? '<div class="nx-savedrow">' +
+            '<input type="text" class="nx-savedinput" maxlength="50" placeholder="View name…" value="' + esc(st.savedName) + '">' +
+            '<div class="nx-savedbtns">' +
+              '<button type="button" class="nx-savedbtn primary nx-savedsave"' + (clean(st.savedName) ? "" : " disabled") + '>Save</button>' +
+              '<button type="button" class="nx-savedbtn nx-savedcancel">Cancel</button>' +
+            '</div>' +
+          '</div>'
+        : '<button type="button" class="nx-savednew"><span>&#8853;</span>Save current view as…</button>';
+
+      var list = st.savedViews.length
+        ? st.savedViews.map(function (f) {
+            var on = f.name === st.activeView;
+            return '<div class="nx-savedopt' + (on ? " on" : "") + '" data-name="' + esc(f.name) + '" title="' + esc(f.name) + '">' +
+                     '<span class="nx-savedtick">' + (on ? "&#10003;" : "") + '</span>' +
+                     '<span class="nx-savedname">' + esc(f.name) + '</span>' +
+                     '<button type="button" class="nx-saveddel" data-name="' + esc(f.name) + '" title="Delete this view">&times;</button>' +
+                   '</div>';
+          }).join("")
+        : '<div class="nx-savednote">No saved views yet.</div>';
+
+      // Only worth saying when it is NOT true: a working localStorage needs no explanation, but a
+      // blocked one turns Save into a promise the next reload breaks.
+      var warn = st.savedPersisted
+        ? ""
+        : '<div class="nx-savedwarn">This browser is blocking storage, so these views last only until the tile reloads.</div>';
+
+      $.savedDrop.innerHTML = head + '<div class="nx-saveddiv"></div>' + list + warn;
+      var inp = $.savedDrop.querySelector(".nx-savedinput");
+      if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     },
 
     // ---- chart --------------------------------------------------------------
