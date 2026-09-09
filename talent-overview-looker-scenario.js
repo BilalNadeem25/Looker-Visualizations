@@ -60,6 +60,20 @@
           section: 'Scale',
           order: 3
         },
+        min_tenure_months: {
+          label: 'Min months at the company before a role can be moved (0 = no gate)',
+          default: 12,
+          type: 'number',
+          section: 'Optimizer',
+          order: 2
+        },
+        mcp_min_experience_months: {
+          label: 'Min months of experience to enter a mission-critical role (0 = no gate)',
+          default: 0,
+          type: 'number',
+          section: 'Optimizer',
+          order: 3
+        },
         max_level_gap: {
           label: 'Max job-level gap for an automatic swap',
           default: 1,
@@ -573,6 +587,13 @@
           // Seniority grade of this role (talent_roles.level). Only the ABSOLUTE gap
           // between two roles is used, so the client's numbering direction is irrelevant.
           job_level:                  toNum(pick(row, 'job_level')),
+          // Tenure and total experience of this role's INCUMBENT (person attributes, not
+          // role attributes). The optimizer reads the month counts; the formatted strings
+          // are what the app itself shows, kept for display so the two agree.
+          tenure_months:              toNum(pick(row, 'duration_in_company_months')),
+          experience_months:          toNum(pick(row, 'experience_months')),
+          tenure_text:                pick(row, 'duration_in_company') ?? null,
+          experience_text:            pick(row, 'years_of_experience') ?? null,
           client_name:                pick(row, 'client_name') ?? '—',
           bench_strength:             normBench(pick(row, 'bench_strength')),
           bench_risk:                 normBenchRisk(pick(row, 'bench_risk')),
@@ -639,6 +660,7 @@
             talent_role_id: '__root__', parent_talent_role_id: null, user_id: null,
             employee_name: '', talent_role_name: '', parent_talent_role_name: null,
             division_name: null, department_name: null, job_level: null,
+            tenure_months: null, experience_months: null, tenure_text: null, experience_text: null,
             org_health_index: 'N/A', bench_risk: 'N/A',
             is_mission_critical_position: false, is_talent: false, role_fit_score: null,
             successor_role_fit_scores: [], candidate_role_fit_scores: [], employee_role_fits: []
@@ -798,6 +820,7 @@
                 if (r.tally.oneway)   skipped.push(`${r.tally.oneway} one-way score`);
                 if (r.tally.division) skipped.push(`${r.tally.division} cross-division`);
                 if (r.tally.level)    skipped.push(`${r.tally.level} over ${r.maxGap} level${r.maxGap === 1 ? '' : 's'} apart`);
+                if (r.tally.experience) skipped.push(`${r.tally.experience} short of the ${r.mcpMinExp}-month MCP experience floor`);
                 if (r.tally.noMatrix) skipped.push(`${r.tally.noMatrix} unassessed`);
                 if (r.tally.unscored) skipped.push(`${r.tally.unscored} no current fit`);
                 return `
@@ -812,6 +835,8 @@
                     ${!r.moves ? `<div class="to-opt-note">No legal swap improves the org from here${r.tally.pairs ? ` — ${r.tally.pairs} pair${r.tally.pairs === 1 ? '' : 's'} examined` : ''}.</div>` : ''}
                     ${skipped.length ? `<div class="to-opt-note">Rejected: ${skipped.join(' · ')}.${r.divOnly && r.tally.division ? ' Untick below for cross-division.' : ''}</div>` : ''}
                     ${r.unlevelled ? `<div class="to-opt-note" style="color:#e67e22;">${r.unlevelled} swap${r.unlevelled === 1 ? '' : 's'} not seniority-checked — no job level. Add <b>job_level</b> to the query.</div>` : ''}
+                    ${r.heldByTenure ? `<div class="to-opt-note">${r.heldByTenure} role${r.heldByTenure === 1 ? '' : 's'} held back: under ${r.minTenure} months at the company.</div>` : ''}
+                    ${r.untenured ? `<div class="to-opt-note" style="color:#e67e22;">${r.untenured} swap${r.untenured === 1 ? '' : 's'} not tenure-checked — no company join date. Add <b>duration_in_company_months</b> to the query.</div>` : ''}
                     ${r.capped ? `<div class="to-opt-note" style="color:#e67e22;">Stopped at the safety cap — run it again to continue.</div>` : ''}
                   </div>` ;
               })()}
@@ -2183,6 +2208,45 @@
           return (la == null || lb == null) ? null : Math.abs(la - lb);
         };
 
+        // ── Tenure and experience gates ────────────────────────────
+        // Both are attributes of the PERSON, so they are read off the person's home role
+        // (where their own record lives) and applied per-person, not per-pair.
+        //
+        // They are GATES, never scores. Two reasons that matters. The fit model already has
+        // past-history weightings of its own, so adding experience to the objective would
+        // re-weight a factor already inside role_fit_score by an unknown amount. And
+        // experience_months deliberately double-counts overlapping Work Experience rows to
+        // stay bug-compatible with the app — a figure knowingly inexact is fine as a
+        // threshold ("has at least N months") and wrong as a multiplier. Keeping them out of
+        // the accept test also preserves the property that every accepted swap strictly
+        // increases (new greens, weighted fit), which is what stops the search cycling.
+        const monthsOf = (personHome, field) => {
+          const pv = nodeById(personHome);
+          if (!pv || pv.data[field] == null || pv.data[field] === '') return null;
+          const n = Number(pv.data[field]);
+          return isFinite(n) && n >= 0 ? n : null;
+        };
+        const minTenure = () => cfgNum('min_tenure_months', 12, 0);
+        const mcpMinExp = () => cfgNum('mcp_min_experience_months', 0, 0);
+        // A recent joiner has not had a fair run at their current seat, and their fit score
+        // rests on thin evidence. null tenure is unevaluable, not a failure.
+        const tooNewToMove = personHome => {
+          const cap = minTenure();
+          if (!cap) return false;
+          const m = monthsOf(personHome, 'tenure_months');
+          return m != null && m < cap;
+        };
+        // Mission-critical seats can be held to a track record. Only the DESTINATION being
+        // mission-critical triggers it, so ordinary moves are untouched.
+        const tooGreenForSeat = (personHome, seatId) => {
+          const cap = mcpMinExp();
+          if (!cap) return false;
+          const dd = seatDataOf(seatId);
+          if (!dd || !isTruthy(dd.is_mission_critical_position)) return false;
+          const m = monthsOf(personHome, 'experience_months');
+          return m != null && m < cap;
+        };
+
         // Fit + band a person (identified by their HOME role) would have in `seatId`,
         // by the same rule the metric uses: at home, the node's own scores; away, the
         // entry from their fit matrix. null when that pairing was never assessed.
@@ -2231,6 +2295,17 @@
           }
           // null only when a level is missing, which is what `unlevelled` reports.
           const gap = (gapA == null || gapB == null) ? null : Math.max(gapA, gapB);
+
+          // Tenure: applied to both people, since a swap moves both of them.
+          if (tooNewToMove(pA) || tooNewToMove(pB)) {
+            return { seatA: a, seatB: b, ok: false, reason: 'tenure' };
+          }
+          // Experience: only against the seat each person would arrive in.
+          if (tooGreenForSeat(pA, b) || tooGreenForSeat(pB, a)) {
+            return { seatA: a, seatB: b, ok: false, reason: 'experience' };
+          }
+          const tenureKnown = monthsOf(pA, 'tenure_months') != null &&
+                              monthsOf(pB, 'tenure_months') != null;
           // Reciprocity first — it is the cheapest rejection and the most common one.
           const aNew = projectedFit(pA, b), bNew = projectedFit(pB, a);
           if (!aNew || !bNew) return { seatA: a, seatB: b, ok: false, reason: 'oneway' };
@@ -2245,7 +2320,7 @@
           const fitDelta = (bNew.fit - aNow.fit) * wA + (aNew.fit - bNow.fit) * wB;
           const ok = greenDelta > 0 || (greenDelta === 0 && fitDelta > OPT_EPS);
           return {
-            seatA: a, seatB: b, greenDelta, fitDelta, levelGap: gap, ok,
+            seatA: a, seatB: b, greenDelta, fitDelta, levelGap: gap, tenureKnown, ok,
             reason: ok ? null : (greenDelta < 0 ? 'losesgreen' : 'nogain')
           };
         };
@@ -2281,8 +2356,14 @@
         const runAutoOptimize = () => {
           const before = computeOrgFitPair();
           const startedFrom = realNodes().filter(n => n._placedUser).length;
-          const tally = { pairs: 0, noMatrix: 0, division: 0, level: 0, oneway: 0, unscored: 0, nogain: 0, losesgreen: 0 };
-          let rounds = 0, moves = 0, unlevelled = 0;
+          const tally = { pairs: 0, noMatrix: 0, division: 0, level: 0, tenure: 0, experience: 0,
+                          oneway: 0, unscored: 0, nogain: 0, losesgreen: 0 };
+          let rounds = 0, moves = 0, unlevelled = 0, untenured = 0;
+          // How many roles the tenure gate takes off the table entirely. A count of people
+          // is the actionable number here; a count of rejected pairs is not, because one
+          // recent joiner turns up in dozens of them.
+          const heldByTenure = minTenure()
+            ? realNodes().filter(n => tooNewToMove(n.talent_role_id)).length : 0;
 
           while (rounds < OPT_MAX_ROUNDS && moves < OPT_MAX_MOVES) {
             // Only the first pass reports rejections — later passes see a shifted board
@@ -2307,6 +2388,7 @@
               used.add(c.seatA); used.add(c.seatB);
               swapSeats(c.seatA, c.seatB);
               if (c.levelGap == null) unlevelled++;   // taken without a seniority check
+              if (!c.tenureKnown)     untenured++;    // taken without a tenure check
               applied++; moves++;
             }
             rounds++;
@@ -2316,6 +2398,7 @@
           const after = computeOrgFitPair();
           self._optReport = {
             moves, rounds, tally, startedFrom, unlevelled, maxGap: maxLevelGap(),
+            untenured, heldByTenure, minTenure: minTenure(), mcpMinExp: mcpMinExp(),
             fitBefore:   before.simAvg,   fitAfter:   after.simAvg,
             greenBefore: before.simGreen, greenAfter: after.simGreen,
             pctBefore:   before.simPct,   pctAfter:   after.simPct,
@@ -2376,7 +2459,11 @@
                 fitAfter:   e ? numOr(e.role_fit) : null,
                 bandBefore: p.org_health_index || 'N/A',
                 bandAfter:  e ? (e.band || 'N/A') : 'N/A',
-                toMcp:      to ? isTruthy(to.is_mission_critical_position) : false
+                toMcp:      to ? isTruthy(to.is_mission_critical_position) : false,
+                // Carried so a reviewer can apply the judgement the gates deliberately
+                // don't: the optimizer only checks these against a threshold.
+                tenure:     p.tenure_text || null,
+                experience: p.experience_text || null
               });
             });
           });
@@ -2442,6 +2529,9 @@
               lines.push(`     from : ${s.fromRole}${s.fromDiv ? ` (${s.fromDiv})` : ''}`);
               lines.push(`     to   : ${s.toRole}${s.toDiv ? ` (${s.toDiv})` : ''}${s.toMcp ? '  [MISSION CRITICAL]' : ''}${s.crossDiv ? '  [CROSS-DIVISION]' : ''}`);
               lines.push(`     fit  : ${s.fitBefore == null ? '—' : s.fitBefore} (${s.bandBefore})  ->  ${s.fitAfter == null ? 'NOT ASSESSED for this role' : `${s.fitAfter} (${s.bandAfter})`}`);
+              if (s.tenure || s.experience) {
+                lines.push(`     who  : ${[s.tenure ? `${s.tenure} at the company` : '', s.experience ? `${s.experience} total experience` : ''].filter(Boolean).join(' · ')}`);
+              }
             });
             lines.push('');
           });
@@ -3222,6 +3312,19 @@
             <span class="to-tt-label">Org Unit</span>
             <span class="to-tt-value">${[data.division_name, data.department_name].filter(Boolean).join(' · ')}</span>
           </div>` : ''}
+          ${(() => {
+            // Compact form from the month counts, e.g. "8y 2m". Falls back to the app's own
+            // formatted strings when only those are in the query.
+            const ym = (m, txt) => m != null ? `${Math.floor(m / 12)}y ${m % 12}m` : (txt || null);
+            const t = ym(data.tenure_months, data.tenure_text);
+            const x = ym(data.experience_months, data.experience_text);
+            if (!t && !x) return '';
+            return `
+          <div class="to-tt-row">
+            <span class="to-tt-label">Tenure · Exp</span>
+            <span class="to-tt-value">${[t || '—', x || '—'].join(' · ')}</span>
+          </div>`;
+          })()}
         `;
 
         this._positionTooltip(event);
