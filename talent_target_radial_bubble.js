@@ -75,6 +75,38 @@
     });
   }
 
+  // A compact, comparable description of the dashboard / explore filters behind the query.
+  // A tile can READ these (Looker reports them on queryResponse) but has no way to SET them —
+  // there is no API for a visualization to write a dashboard filter. So a saved view records
+  // what they were and says so when they no longer match, instead of quietly restoring the
+  // handful of controls it does own and looking like it failed. Returns null on Looker builds
+  // that report nothing, which is treated as "cannot tell" rather than "no filters".
+  function filterSummary(qr){
+    var af = qr && qr.applied_filters;
+    if (!af || typeof af !== "object") return null;
+    var out = {};
+    Object.keys(af).forEach(function(k){
+      var f = af[k];
+      var field = (f && f.field && (f.field.label_short || f.field.label || f.field.name)) || k;
+      var v = (f && typeof f === "object" && "value" in f) ? f.value : f;
+      v = v == null ? "" : String(v).trim();
+      if (v && v !== "[]") out[String(field)] = v;
+    });
+    return out;
+  }
+  // Only a real difference counts. Either side being null means this build does not report
+  // filters at all, and a warning nobody can act on is worse than none.
+  function filtersDiffer(a, b){
+    if (!a || !b) return false;
+    var ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
+    if (ka.join(" ") !== kb.join(" ")) return true;
+    return ka.some(function(k){ return a[k] !== b[k]; });
+  }
+  function filterText(f){
+    if (!f) return "";
+    return Object.keys(f).map(function(k){ return k + ": " + f[k]; }).join(" · ");
+  }
+
   // talent_profiles columns behind the card's Profile Information block. `country` is not listed
   // because the tile already fetches it as its own dimension (lowercased) — the block reuses that.
   var PERSONAL_KEYS = ["email","contact_number","dob","age","gender","address_line_1","address_line_2",
@@ -94,6 +126,71 @@
   // sandbox withholds allow-same-origin, merely TOUCHING window.localStorage throws a
   // SecurityError. Hence the try/catch around reads as well as writes, and the in-memory
   // fallback: the feature degrades to session-only rather than breaking the toolbar outright.
+  // ---- saved views: the durable form is a link -------------------------------
+  // Looker's custom-visualization iframe is sandboxed without allow-same-origin, so storage of
+  // every kind throws and the list below survives only as long as the tile is mounted. The one
+  // place a view CAN live is the dashboard URL, which Looker already uses to carry filter
+  // values: the tile writes its own state into a no-op `view_state` parameter, the URL picks it
+  // up, and a bookmark of that URL then restores both halves of a view at once — the filters
+  // natively, the tile's own state through the `view_state_code` echo column.
+  //
+  // Short keys because this rides in a URL that gets pasted and bookmarked. Values are the same
+  // refresh-stable identifiers the in-session list uses: user ids, (user × role) pks, role ids,
+  // and competency / behaviour NAMES — never positional behaviour ids.
+  function encodeView(view){
+    var s = view.sim || {};
+    var o = { v:1, f:view.maxRoleFit, m:(view.mode === "simulate" ? "s" : "c"), r:view.chartRole };
+    if ((view.searchIds||[]).length)    o.s  = view.searchIds;
+    if ((view.selectedPairs||[]).length) o.p = view.selectedPairs;
+    if ((view.pickedComp||[]).length)   o.c  = view.pickedComp;
+    // Only worth the URL length in simulate mode; in compare none of it is reachable.
+    if (view.mode === "simulate") {
+      o.xs = s.scope; o.xa = s.auto ? 1 : 0; o.xg = s.scopeAuto ? 1 : 0;
+      if ((s.weak||[]).length)        o.xw = s.weak;
+      if ((s.complements||[]).length) o.xk = s.complements;
+    }
+    try { return b64u(JSON.stringify(o)); } catch(e){ return ""; }
+  }
+  function decodeView(code){
+    var o;
+    try { o = JSON.parse(unb64u(code)); } catch(e){ return null; }
+    // Anything hand-edited in the URL bar lands here. One shape check, then every field is
+    // re-validated against the live rows by _applyViewData anyway.
+    if (!o || typeof o !== "object" || o.v !== 1) return null;
+    return {
+      v: 1,
+      maxRoleFit: o.f,
+      mode: o.m === "s" ? "simulate" : "compare",
+      chartRole: o.r,
+      filters: null,                       // the URL carries the real filters; nothing to compare
+      searchIds: o.s || [],
+      selectedPairs: o.p || [],
+      pickedComp: o.c || [],
+      sim: { scope: o.xs, auto: o.xa !== 0, scopeAuto: o.xg !== 0, weak: o.xw || [], complements: o.xk || [] }
+    };
+  }
+  // base64url: the payload is JSON with names in it, which can be non-ASCII, and it has to
+  // survive a URL, a chat message and a bookmark without escaping into something else.
+  function b64u(s){
+    var b;
+    try {
+      var bytes = new TextEncoder().encode(s), out = "";
+      for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+      b = btoa(out);
+    } catch(e){ b = btoa(unescape(encodeURIComponent(s))); }
+    return b.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  }
+  function unb64u(c){
+    var b = String(c).replace(/-/g,"+").replace(/_/g,"/");
+    while (b.length % 4) b += "=";
+    var raw = atob(b);
+    try {
+      var arr = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return new TextDecoder().decode(arr);
+    } catch(e){ return decodeURIComponent(escape(raw)); }
+  }
+
   var VIEWS_KEY = "nsia_radial_bubble.savedViews.v1";
   var memViews = null;                       // non-null once localStorage has failed us once
   function viewsAvailable(){ return memViews === null; }
@@ -226,6 +323,12 @@
   .nx-savednote{padding:9px 10px; font-size:11.5px; color:#9aa4b0; text-align:center}
   .nx-savedwarn{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft);
     font-size:11px; color:var(--neg); line-height:1.45}
+  /* Not an error — the view applied fine, there is simply a part of it the tile cannot set. */
+  .nx-savednote-f{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft);
+    font-size:11px; color:var(--muted); line-height:1.45}
+  .nx-savedok{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft);
+    font-size:11px; color:var(--pos); line-height:1.45}
+  .nx-savedwarn b{color:inherit}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
@@ -532,7 +635,12 @@
       level_order: { type: "string", display: "select", label: "Job level numbering",
                      values: [{ "Lower number = more senior (1 = top)": "asc" },
                               { "Higher number = more senior": "desc" }],
-                     default: "asc", section: "Complements", order: 2 }
+                     default: "asc", section: "Complements", order: 2 },
+      // The LookML parameter the tile writes a view into. It has to be the fully-qualified
+      // name, because trigger("filter") addresses fields the way the query does. Change it only
+      // if the view is not called talent_target_group.
+      view_state_field: { type: "string", label: "View-state parameter (LookML field)",
+                          default: "talent_target_group.view_state", section: "Saved views", order: 1 }
     },
 
     // ---- one-time shell -----------------------------------------------------
@@ -596,6 +704,11 @@
         // currently showing the name box instead of the save action.
         savedViews: [], activeView: null, savedOpen: false, savedNaming: false, savedName: "",
         savedPersisted: true,
+        filters: null,             // dashboard filters behind the query; set from each update
+        // Link-backed views. viewCode is what arrived in the URL this update; appliedCode is
+        // the last one acted on, so a bookmarked view lands once instead of fighting every
+        // refresh. viewStateInQuery says whether the tile selected the echo column at all.
+        viewCode: "", appliedCode: "", viewStateInQuery: false, linkWritten: false,
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
@@ -673,6 +786,8 @@
       });
       $.savedDrop.addEventListener("click", function (e) {
         var t = e.target;
+        // Before .nx-savednew, whose class it shares for styling.
+        if (t.closest(".nx-savedupdate")) { self._saveCurrentView(st.activeView); return; }
         if (t.closest(".nx-savednew")) { st.savedNaming = true; st.savedName = ""; self._renderSavedViews(); return; }
         if (t.closest(".nx-savedsave")) { self._saveCurrentView(st.savedName); return; }
         if (t.closest(".nx-savedcancel")) { st.savedNaming = false; st.savedName = ""; self._renderSavedViews(); return; }
@@ -815,7 +930,8 @@
       this._config = Object.assign(
         { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
           color_unscored: "#b6bfca",
-          default_role_fit_max: null, chart_height_pct: 86, max_levels_below: 2, level_order: "asc" },
+          default_role_fit_max: null, chart_height_pct: 86, max_levels_below: 2, level_order: "asc",
+          view_state_field: "talent_target_group.view_state" },
         config || {});
 
       var fields = (queryResponse && queryResponse.fields) || {};
@@ -824,7 +940,7 @@
       ["user_id","name","job_title","current_company","picture","country","target_role_id","target_role_name",
        "role_fit","leadership_score","agility_score","cultural_fit_score","technical_score",
        "subcompetencies_json","skills_json","bench_strength","manager_name","performance_json",
-       "directorate_name","division_name","department_name","job_level","org_headcount"]
+       "directorate_name","division_name","department_name","job_level","org_headcount","view_state_code"]
       .concat(PERSONAL_KEYS)
       .forEach(function (k) {
         var f = all.find(function (x) { return x.name.split(".").pop() === k || x.name === k; });
@@ -845,6 +961,8 @@
       this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
 
       this.state.roleFilterApplied = roleFilterApplied(queryResponse);
+      // What the dashboard filters are right now, so a saved view can be compared against them.
+      this.state.filters = filterSummary(queryResponse);
       // Without job_level the seniority guard cannot run at all. Complements are then unfiltered
       // by level rather than silently excluded, and the sim panel says so.
       this.state.levelInQuery = !!map.job_level;
@@ -855,6 +973,19 @@
       // a small fraction of the workforce — so the idle count line reports this instead of the
       // number of distinct users in the result set. null when the tile did not select the field,
       // in which case the count line falls back to the assessed population as before.
+      // The view carried in the dashboard URL, echoed onto every row by the view_state_code
+      // dimension (a parameter's value has no other way of reaching a visualization). Absent
+      // from the query = the tile has not been set up for link-backed views, which is a
+      // different thing from "no view in the URL" and gets a different message.
+      this.state.viewStateInQuery = !!map.view_state_code;
+      this.state.viewCode = "";
+      if (map.view_state_code) {
+        for (var ci = 0; ci < (data || []).length; ci++) {
+          var cv = clean(val(data[ci], "view_state_code"));
+          if (cv) { this.state.viewCode = cv; break; }
+        }
+      }
+
       this.state.orgHeadcount = null;
       if (map.org_headcount) {
         for (var hi = 0; hi < (data || []).length; hi++) {
@@ -990,7 +1121,8 @@
       st.roleKey = roleKey;
 
       // re-baseline when the set of roles (filter) changes or on first load
-      if (roleChanged || st.maxRoleFit == null) {
+      var rebaselined = roleChanged || st.maxRoleFit == null;
+      if (rebaselined) {
         st.selectedPairs = [];
         st.openMenuPk = null;
         st.zoom = 1; st.panX = 0; st.panY = 0;
@@ -1035,6 +1167,28 @@
         this._resetPool();                   // no-op unless the pick is still system-managed
       }
       this.$.wrap.classList.toggle("simmode", st.mode === "simulate");
+
+      // A re-baseline has just put every control back to its opening default — including the
+      // ones an applied view owns. Without this the toggle goes on naming a view whose settings
+      // were silently wiped, which is indistinguishable from the view never having worked.
+      //
+      // Deliberately ONLY after a re-baseline: an ordinary refresh leaves the toolbar alone, and
+      // re-applying there would throw away whatever the user has adjusted by hand since. The
+      // view is re-read from the saved list each time, so a re-baseline restores it as saved
+      // rather than re-capturing whatever survived.
+      // A view arriving in the URL outranks anything the tile was showing: the user has just
+      // opened a bookmarked link, and that link IS the request. Applied once per distinct code
+      // so that later refreshes leave subsequent hand adjustments alone — re-applying on every
+      // poll of an auto-refreshing dashboard would make the toolbar impossible to touch.
+      var linked = st.viewCode && st.viewCode !== st.appliedCode ? decodeView(st.viewCode) : null;
+      if (linked) {
+        st.appliedCode = st.viewCode;
+        st.activeView = null;                  // a linked view is the URL's, not a named one
+        this._applyViewData(linked, true);
+      } else if (rebaselined && st.activeView && !this._applyView(st.activeView, true)) {
+        st.activeView = null;                  // deleted from another tile / another session
+      }
+
       this._renderTags(); this._renderSug();   // chips carry names, which only exist once rows land
       this._renderSavedViews();                // the toggle unlocks as soon as there are rows
       // the role label and the legend are both set by _draw — they depend on the idle state
@@ -1312,6 +1466,8 @@
         maxRoleFit: st.maxRoleFit,
         mode: st.mode,
         chartRole: st.chartRole,
+        // Not restorable by the tile — recorded so a mismatch can be reported. See filterSummary.
+        filters: st.filters,
         searchIds: st.searchIds.slice(),
         selectedPairs: st.selectedPairs.slice(),
         pickedComp: Object.keys(st.pickedComp).filter(function (n) { return st.pickedComp[n]; }),
@@ -1331,14 +1487,26 @@
     // outlives the query it was saved from: the tile's own Looker filter moves on, people leave,
     // roles are retired. Restoring a chip for somebody the query no longer returns would filter
     // the chart down to nothing with no visible cause.
-    _applyView: function (name) {
-      var st = this.state, $ = this.$;
+    //
+    // `quiet` is for the re-apply that follows a re-baseline in updateAsync, which is about to
+    // render and draw anyway — a second full _draw of several hundred nodes per refresh is worth
+    // avoiding. Returns false when the named view is gone, so that caller can drop the label.
+    _applyView: function (name, quiet) {
+      var st = this.state;
       var saved = st.savedViews.filter(function (f) { return f.name === name; })[0];
-      if (!saved) return;
-      var f = saved.view || {}, sim = f.sim || {};
+      if (!saved) return false;
+      st.activeView = saved.name;
+      this._applyViewData(saved.view || {}, quiet);
+      return true;
+    },
+
+    // The restore itself, against a plain view object — from the session list, or decoded out
+    // of the dashboard URL. Kept separate because a linked view has no name to look up.
+    _applyViewData: function (f, quiet) {
+      var st = this.state, $ = this.$;
+      var sim = f.sim || {};
 
       st.savedOpen = false; st.savedNaming = false; st.savedName = "";
-      st.activeView = saved.name;
 
       // Mode first — _syncSuccessor, _openCardFor and the chip renderer all branch on it.
       st.mode = f.mode === "simulate" ? "simulate" : "compare";
@@ -1394,21 +1562,40 @@
       if (!Object.keys(st.simWeak).length) this._defaultWeak();
 
       this._resetPool();   // a no-op while simAuto is false, i.e. when the view pinned its own picks
-      this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw();
+      if (!quiet) { this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw(); }
     },
 
-    // Upsert by name (case-insensitively). Saving over an existing name is the only way to
-    // UPDATE a view, and two rows reading identically in the list is worse than an overwrite.
+    // Push the current view into the dashboard URL through the no-op `view_state` parameter.
+    // run:false on purpose — the parameter changes no rows, so re-running a 600-row query to
+    // pick up a value the tile already has would be pure latency. The URL updates either way,
+    // which is the whole point.
+    _writeViewCode: function (code) {
+      var field = clean(this._config && this._config.view_state_field);
+      if (!field || !code) return false;
+      try {
+        this.trigger("filter", [{ field: field, value: code, run: false }]);
+        this.state.appliedCode = code;   // it is ours now; do not re-apply it on the next update
+        return true;
+      } catch (e) {
+        console.error("[radial bubble] could not write the view to the dashboard filter", e);
+        return false;
+      }
+    },
+
+    // Upsert by name (case-insensitively) into the in-session list, and write the same view to
+    // the URL. The name is the session's handle on it; the URL is what actually survives.
     _saveCurrentView: function (raw) {
       var st = this.state, name = clean(raw).slice(0, 50);
       if (!name) return;
+      var view = this._captureView();
       var list = st.savedViews.filter(function (f) { return f.name.toLowerCase() !== name.toLowerCase(); });
-      list.push({ name: name, savedAt: Date.now(), view: this._captureView() });
+      list.push({ name: name, savedAt: Date.now(), view: view });
       list.sort(function (a, b) { return a.name.localeCompare(b.name); });
       st.savedViews = list;
       st.savedPersisted = viewsWrite(list);
       st.activeView = name;
       st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+      st.linkWritten = st.viewStateInQuery ? this._writeViewCode(encodeView(view)) : false;
       this._renderSavedViews();
     },
 
@@ -1428,8 +1615,13 @@
     // left it — except zoom/pan, which no view touches either.
     _clearActiveView: function () {
       var st = this.state, $ = this.$;
-      st.activeView = null;
+      st.activeView = null; st.linkWritten = false;
       st.savedOpen = false; st.savedNaming = false; st.savedName = "";
+      // Blank the URL too, or reloading the page would put the cleared view straight back.
+      if (st.viewStateInQuery && st.appliedCode) {
+        this._writeViewCode(" ");            // a space, not "": Looker drops an empty filter value
+        st.appliedCode = "";
+      }
 
       st.mode = "compare";
       Array.prototype.forEach.call($.mode.querySelectorAll("button"), function (b) {
@@ -1469,15 +1661,29 @@
       $.savedDrop.hidden = !st.savedOpen;
       if (!st.savedOpen) { $.savedDrop.innerHTML = ""; return; }
 
-      var head = st.savedNaming
-        ? '<div class="nx-savedrow">' +
-            '<input type="text" class="nx-savedinput" maxlength="50" placeholder="View name…" value="' + esc(st.savedName) + '">' +
-            '<div class="nx-savedbtns">' +
-              '<button type="button" class="nx-savedbtn primary nx-savedsave"' + (clean(st.savedName) ? "" : " disabled") + '>Save</button>' +
-              '<button type="button" class="nx-savedbtn nx-savedcancel">Cancel</button>' +
-            '</div>' +
-          '</div>'
-        : '<button type="button" class="nx-savednew"><span>&#8853;</span>Save current view as…</button>';
+      // Saving while idle produces a view with nothing in it — no fit is plotted, no card can
+      // open, simulate is unreachable. Say why rather than hand back an empty snapshot later.
+      var idle = this._isIdle();
+      var head;
+      if (idle) {
+        head = '<div class="nx-savednote">Select a target role above the tile to save a view.</div>';
+      } else if (st.savedNaming) {
+        head = '<div class="nx-savedrow">' +
+                 '<input type="text" class="nx-savedinput" maxlength="50" placeholder="View name…" value="' + esc(st.savedName) + '">' +
+                 '<div class="nx-savedbtns">' +
+                   '<button type="button" class="nx-savedbtn primary nx-savedsave"' + (clean(st.savedName) ? "" : " disabled") + '>Save</button>' +
+                   '<button type="button" class="nx-savedbtn nx-savedcancel">Cancel</button>' +
+                 '</div>' +
+               '</div>';
+      } else {
+        // With a view applied, overwriting it is the likely intent and re-typing its name to do
+        // that is busywork — so that becomes the primary action and "save as new" the secondary.
+        head = (st.activeView
+                 ? '<button type="button" class="nx-savednew nx-savedupdate"><span>&#8635;</span>Update “' + esc(st.activeView) + '”</button>'
+                 : "") +
+               '<button type="button" class="nx-savednew"><span>&#8853;</span>Save ' +
+               (st.activeView ? "as new" : "current view as") + '…</button>';
+      }
 
       var list = st.savedViews.length
         ? st.savedViews.map(function (f) {
@@ -1490,11 +1696,31 @@
           }).join("")
         : '<div class="nx-savednote">No saved views yet.</div>';
 
-      // Only worth saying when it is NOT true: a working localStorage needs no explanation, but a
-      // blocked one turns Save into a promise the next reload breaks.
-      var warn = st.savedPersisted
-        ? ""
-        : '<div class="nx-savedwarn">This browser is blocking storage, so these views last only until the tile reloads.</div>';
+      // What actually keeps a view. The names above are a convenience for flipping between
+      // setups in one sitting; the dashboard URL is the thing that survives a reload, so that is
+      // what the footer talks about. Three states, because the fix differs in each.
+      var warn;
+      if (!st.viewStateInQuery) {
+        warn = '<div class="nx-savedwarn">Add the <b>View state (tile)</b> field to this tile to keep views. ' +
+               'Without it a view lasts only until the tile reloads.</div>';
+      } else if (st.linkWritten) {
+        warn = '<div class="nx-savedok">Written to the dashboard URL — bookmark this page, or copy its link, ' +
+               'to reopen this exact view.</div>';
+      } else {
+        warn = '<div class="nx-savednote-f">Names here last for this session. Saving also writes the view into ' +
+               'the dashboard URL — bookmark that to keep it.</div>';
+      }
+
+      // The applied view was saved under different dashboard filters. A tile can read those but
+      // never set them, so this is the one part of a view the user has to restore by hand — say
+      // so explicitly rather than let the toolbar look like it half-worked.
+      var applied = st.activeView && st.savedViews.filter(function (f) { return f.name === st.activeView; })[0];
+      var savedFilters = applied && applied.view && applied.view.filters;
+      if (filtersDiffer(savedFilters, st.filters)) {
+        warn += '<div class="nx-savednote-f">Saved with different dashboard filters — ' +
+                esc(filterText(savedFilters) || "none") +
+                '. Set those above the tile; a visualization cannot change them itself.</div>';
+      }
 
       $.savedDrop.innerHTML = head + '<div class="nx-saveddiv"></div>' + list + warn;
       var inp = $.savedDrop.querySelector(".nx-savedinput");
