@@ -81,30 +81,36 @@
   // what they were and says so when they no longer match, instead of quietly restoring the
   // handful of controls it does own and looking like it failed. Returns null on Looker builds
   // that report nothing, which is treated as "cannot tell" rather than "no filters".
+  // Each entry keeps BOTH the field name and the label: the name is how trigger("filter")
+  // addresses a filter when a view puts it back, the label is what a human reads. Keying by
+  // label alone — as this did at first — records the filter but leaves it unaddressable, which
+  // is why a saved view could not restore the target role.
   function filterSummary(qr){
     var af = qr && qr.applied_filters;
     if (!af || typeof af !== "object") return null;
-    var out = {};
+    var out = [];
     Object.keys(af).forEach(function(k){
       var f = af[k];
-      var field = (f && f.field && (f.field.label_short || f.field.label || f.field.name)) || k;
+      var fld = (f && f.field) || {};
+      var name = fld.name || k;
       var v = (f && typeof f === "object" && "value" in f) ? f.value : f;
       v = v == null ? "" : String(v).trim();
-      if (v && v !== "[]") out[String(field)] = v;
+      if (v && v !== "[]") out.push({ n: String(name), l: String(fld.label_short || fld.label || name), v: v });
     });
+    out.sort(function(a,b){ return a.n < b.n ? -1 : a.n > b.n ? 1 : 0; });
     return out;
+  }
+  function filterKey(list){
+    return (list || []).map(function(x){ return x.n + "=" + x.v; }).join("|");
   }
   // Only a real difference counts. Either side being null means this build does not report
   // filters at all, and a warning nobody can act on is worse than none.
   function filtersDiffer(a, b){
     if (!a || !b) return false;
-    var ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
-    if (ka.join(" ") !== kb.join(" ")) return true;
-    return ka.some(function(k){ return a[k] !== b[k]; });
+    return filterKey(a) !== filterKey(b);
   }
-  function filterText(f){
-    if (!f) return "";
-    return Object.keys(f).map(function(k){ return k + ": " + f[k]; }).join(" · ");
+  function filterText(list){
+    return (list || []).map(function(x){ return x.l + ": " + x.v; }).join(" · ");
   }
 
   // talent_profiles columns behind the card's Profile Information block. `country` is not listed
@@ -140,6 +146,14 @@
   function encodeView(view){
     var s = view.sim || {};
     var o = { v:1, f:view.maxRoleFit, m:(view.mode === "simulate" ? "s" : "c"), r:view.chartRole };
+    // The query half of the view. Redundant when the link is opened whole — the dashboard URL
+    // carries its own filters — but a view is also applied from the dropdown mid-session, and
+    // there the tile has to put the target role back itself or the chart shows the wrong people.
+    if ((view.filters||[]).length) o.fl = view.filters.map(function(x){ return [x.n, x.l, x.v]; });
+    // Backstop for the same thing, read off the rows rather than off applied_filters: the roles
+    // the query actually returned. Looker builds vary in what they report on applied_filters,
+    // and the data never lies about which roles were in view.
+    if ((view.roles||[]).length) o.rr = view.roles;
     if ((view.searchIds||[]).length)    o.s  = view.searchIds;
     if ((view.selectedPairs||[]).length) o.p = view.selectedPairs;
     if ((view.pickedComp||[]).length)   o.c  = view.pickedComp;
@@ -162,7 +176,8 @@
       maxRoleFit: o.f,
       mode: o.m === "s" ? "simulate" : "compare",
       chartRole: o.r,
-      filters: null,                       // the URL carries the real filters; nothing to compare
+      filters: (o.fl || []).map(function(a){ return { n:String(a[0]), l:String(a[1]), v:String(a[2]) }; }),
+      roles: o.rr || [],
       searchIds: o.s || [],
       selectedPairs: o.p || [],
       pickedComp: o.c || [],
@@ -640,7 +655,15 @@
       // name, because trigger("filter") addresses fields the way the query does. Change it only
       // if the view is not called talent_target_group.
       view_state_field: { type: "string", label: "View-state parameter (LookML field)",
-                          default: "talent_target_group.view_state", section: "Saved views", order: 1 }
+                          default: "talent_target_group.view_state", section: "Saved views", order: 1 },
+      // Which field the dashboard's target-role filter is wired to. Blank means "whatever this
+      // tile selected as target_role_id", which is right whenever the filter is on that field.
+      // Set it only if the dashboard filters on something else — target_role_name, say, or a
+      // field from a different view.
+      role_filter_field: { type: "string", label: "Target-role filter field (blank = the tile's own)",
+                           default: "", section: "Saved views", order: 2 },
+      restore_filters: { type: "boolean", label: "Views restore the dashboard filters",
+                         default: true, section: "Saved views", order: 3 }
     },
 
     // ---- one-time shell -----------------------------------------------------
@@ -709,6 +732,9 @@
         // the last one acted on, so a bookmarked view lands once instead of fighting every
         // refresh. viewStateInQuery says whether the tile selected the echo column at all.
         viewCode: "", appliedCode: "", viewStateInQuery: false, linkWritten: false,
+        // The filter restore that a view asks for, attempted once per distinct target so a
+        // Looker build that ignores it cannot put the dashboard in a re-query loop.
+        roleFieldName: "", queryWriteFor: null, askedRequery: false,
         panning: false, dragMoved: false, sCX: 0, sCY: 0, sPanX: 0, sPanY: 0
       };
       var self = this, st = this.state, $ = this.$;
@@ -931,7 +957,7 @@
         { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
           color_unscored: "#b6bfca",
           default_role_fit_max: null, chart_height_pct: 86, max_levels_below: 2, level_order: "asc",
-          view_state_field: "talent_target_group.view_state" },
+          view_state_field: "talent_target_group.view_state", role_filter_field: "", restore_filters: true },
         config || {});
 
       var fields = (queryResponse && queryResponse.fields) || {};
@@ -961,8 +987,13 @@
       this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
 
       this.state.roleFilterApplied = roleFilterApplied(queryResponse);
-      // What the dashboard filters are right now, so a saved view can be compared against them.
+      // What the dashboard filters are right now, so a saved view can be compared against them
+      // — and, when one is applied, put back.
       this.state.filters = filterSummary(queryResponse);
+      // The fully-qualified name of whatever this tile selected as target_role_id. That is the
+      // field a dashboard's target-role filter is normally wired to, and it is how the restore
+      // addresses it when the option is left blank.
+      this.state.roleFieldName = map.target_role_id || "";
       // Without job_level the seniority guard cannot run at all. Complements are then unfiltered
       // by level rather than silently excluded, and the sim panel says so.
       this.state.levelInQuery = !!map.job_level;
@@ -1184,8 +1215,10 @@
       if (linked) {
         st.appliedCode = st.viewCode;
         st.activeView = null;                  // a linked view is the URL's, not a named one
-        this._applyViewData(linked, true);
-      } else if (rebaselined && st.activeView && !this._applyView(st.activeView, true)) {
+        // If restoring it asked for different filters, the rows about to arrive are the ones
+        // this view was actually saved against — so let the same code apply once more then.
+        if (this._applyViewData(linked, true, false)) st.appliedCode = "";
+      } else if (rebaselined && st.activeView && !this._applyView(st.activeView, true, true)) {
         st.activeView = null;                  // deleted from another tile / another session
       }
 
@@ -1466,8 +1499,11 @@
         maxRoleFit: st.maxRoleFit,
         mode: st.mode,
         chartRole: st.chartRole,
-        // Not restorable by the tile — recorded so a mismatch can be reported. See filterSummary.
         filters: st.filters,
+        // The roles the query returned when this was saved — what the target-role filter has to
+        // be put back to. Taken from the rows, not from applied_filters, so it holds even where
+        // Looker reports no filters at all.
+        roles: st.rolesInView.map(function (r) { return r.id; }),
         searchIds: st.searchIds.slice(),
         selectedPairs: st.selectedPairs.slice(),
         pickedComp: Object.keys(st.pickedComp).filter(function (n) { return st.pickedComp[n]; }),
@@ -1491,18 +1527,18 @@
     // `quiet` is for the re-apply that follows a re-baseline in updateAsync, which is about to
     // render and draw anyway — a second full _draw of several hundred nodes per refresh is worth
     // avoiding. Returns false when the named view is gone, so that caller can drop the label.
-    _applyView: function (name, quiet) {
+    _applyView: function (name, quiet, skipQuery) {
       var st = this.state;
       var saved = st.savedViews.filter(function (f) { return f.name === name; })[0];
       if (!saved) return false;
       st.activeView = saved.name;
-      this._applyViewData(saved.view || {}, quiet);
+      st.askedRequery = this._applyViewData(saved.view || {}, quiet, skipQuery);
       return true;
     },
 
     // The restore itself, against a plain view object — from the session list, or decoded out
     // of the dashboard URL. Kept separate because a linked view has no name to look up.
-    _applyViewData: function (f, quiet) {
+    _applyViewData: function (f, quiet, skipQuery) {
       var st = this.state, $ = this.$;
       var sim = f.sim || {};
 
@@ -1563,6 +1599,16 @@
 
       this._resetPool();   // a no-op while simAuto is false, i.e. when the view pinned its own picks
       if (!quiet) { this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw(); }
+
+      // Last, because everything above configures the tile for the rows it is about to get:
+      // ask Looker for the saved filters. When this fires, updateAsync runs again on the right
+      // population and re-applies this same view over it.
+      //
+      // skipQuery is the re-apply that follows a re-baseline. Restoring filters there would
+      // mean an applied view drags the dashboard back every time somebody changes a filter by
+      // hand — the tile fighting the user. Filters are only ever restored by a deliberate act:
+      // picking a view from the list, or opening a link.
+      return skipQuery ? false : this._restoreQuery(f);
     },
 
     // Push the current view into the dashboard URL through the no-op `view_state` parameter.
@@ -1580,6 +1626,55 @@
         console.error("[radial bubble] could not write the view to the dashboard filter", e);
         return false;
       }
+    },
+
+    // Put the query half of a view back: the dashboard filters it was saved under, above all the
+    // target-role selection, without which the chart is showing a different population from the
+    // one the view describes.
+    //
+    // This is the only part of a restore that cannot be done in place — the tile has to ask
+    // Looker to change the filter and re-run. The rest of the view is applied first and then
+    // again by updateAsync once the new rows land, because a re-query re-baselines the toolbar.
+    //
+    // Attempted at most once per target: if this Looker build only cross-filters the tile rather
+    // than moving the dashboard filter, the roles will never match and retrying on every update
+    // would spin the dashboard forever. Returns true when a re-query was actually requested.
+    _restoreQuery: function (f) {
+      var st = this.state;
+      if (this._config && this._config.restore_filters === false) return false;
+
+      var writes = [];
+      // Prefer what applied_filters recorded — it names every filter, not just the role, and
+      // carries Looker's own filter expressions verbatim, so they round-trip.
+      if ((f.filters || []).length && st.filters) {
+        if (filtersDiffer(f.filters, st.filters)) {
+          f.filters.forEach(function (x) { writes.push({ field: x.n, value: x.v }); });
+        }
+      } else if ((f.roles || []).length) {
+        // Nothing recorded (or this build reports no filters): fall back to the roles the rows
+        // themselves showed, which is the piece that actually matters.
+        var want = f.roles.slice().sort().join(","), field = this._roleField();
+        var have = st.rolesInView.map(function (r) { return r.id; }).sort().join(",");
+        if (field && want !== have) writes.push({ field: field, value: f.roles.join(",") });
+      }
+      if (!writes.length) { st.queryWriteFor = null; return false; }
+
+      var sig = writes.map(function (w) { return w.field + "=" + w.value; }).join("|");
+      if (st.queryWriteFor === sig) return false;      // already asked; Looker did not take it
+      st.queryWriteFor = sig;
+      try {
+        // run only on the last one, so a multi-filter restore costs a single query.
+        writes.forEach(function (w, i) {
+          this.trigger("filter", [{ field: w.field, value: w.value, run: i === writes.length - 1 }]);
+        }, this);
+        return true;
+      } catch (e) {
+        console.error("[radial bubble] could not restore the dashboard filters", e);
+        return false;
+      }
+    },
+    _roleField: function () {
+      return clean(this._config && this._config.role_filter_field) || this.state.roleFieldName || "";
     },
 
     // Upsert by name (case-insensitively) into the in-session list, and write the same view to
@@ -1616,6 +1711,7 @@
     _clearActiveView: function () {
       var st = this.state, $ = this.$;
       st.activeView = null; st.linkWritten = false;
+      st.queryWriteFor = null;      // a later apply gets a fresh attempt at the filters
       st.savedOpen = false; st.savedNaming = false; st.savedName = "";
       // Blank the URL too, or reloading the page would put the cleared view straight back.
       if (st.viewStateInQuery && st.appliedCode) {
@@ -1716,10 +1812,13 @@
       // so explicitly rather than let the toolbar look like it half-worked.
       var applied = st.activeView && st.savedViews.filter(function (f) { return f.name === st.activeView; })[0];
       var savedFilters = applied && applied.view && applied.view.filters;
+      // Covers both ways the dashboard can end up off the view's filters: the user changed one
+      // by hand (the tile deliberately does not drag it back), or this Looker ignored the
+      // restore (_restoreQuery gives up after one attempt rather than spinning). Worded for
+      // both, since the fix — set them above the tile — is the same either way.
       if (filtersDiffer(savedFilters, st.filters)) {
-        warn += '<div class="nx-savednote-f">Saved with different dashboard filters — ' +
-                esc(filterText(savedFilters) || "none") +
-                '. Set those above the tile; a visualization cannot change them itself.</div>';
+        warn += '<div class="nx-savednote-f">The dashboard is filtered differently from this view, which was ' +
+                'saved with ' + esc(filterText(savedFilters) || "no filters") + '.</div>';
       }
 
       $.savedDrop.innerHTML = head + '<div class="nx-saveddiv"></div>' + list + warn;
