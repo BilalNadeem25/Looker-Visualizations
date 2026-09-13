@@ -7,6 +7,17 @@
   // ever a real role id, so this value keeps them out of those pools by construction.
   var NO_ROLE = "__none__";
 
+  // Loading copy, shown in order at 1.8s intervals. It stops on the last line
+  // rather than looping: a message that comes back round reads as "stuck".
+  var VEIL_LINES = [
+    "Working our magic…",
+    "Sizing up the bubbles…",
+    "Matching people to the target role…",
+    "Weighing competencies and skills…",
+    "Working out who complements whom…",
+    "Almost there — arranging the orbit…"
+  ];
+
   // ---- pure helpers ---------------------------------------------------------
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
   function num(v){return v==null||v===""?null:Number(v);}
@@ -122,16 +133,17 @@
                        // are talent_profiles enums.
                        "willingness_for_mobility","vacancy_risk","duration_in_company","years_of_experience"];
 
-  // ---- saved views: storage -------------------------------------------------
-  // The app-side sidebar persists its saved filters through /api/talenttarget/filter; a Looker
-  // tile has no per-user endpoint of its own to write to, so named views live in this browser's
-  // localStorage instead. They are therefore personal to the browser and do not follow the user
-  // to another machine — which is exactly what the dropdown says when storage is unavailable.
+  // ---- saved views: where a view can live ------------------------------------
+  // The app-side sidebar persists its saved filters through /api/talenttarget/filter. A Looker
+  // tile has no equivalent, and no browser storage either: the visualization iframe is
+  // sandboxed without allow-same-origin, which makes localStorage, sessionStorage, cookies and
+  // IndexedDB throw on the mere act of touching them. Nothing here may reach for one.
   //
-  // Looker renders custom visualizations inside a sandboxed iframe, and on builds where that
-  // sandbox withholds allow-same-origin, merely TOUCHING window.localStorage throws a
-  // SecurityError. Hence the try/catch around reads as well as writes, and the in-memory
-  // fallback: the feature degrades to session-only rather than breaking the toolbar outright.
+  // That leaves exactly two writable places, and the feature uses both:
+  //   - the TILE CONFIG, via updateConfig, which holds the curated list of named views and
+  //     reaches every viewer of the dashboard once an editor saves it;
+  //   - the DASHBOARD URL, via a no-op `view_state` parameter, which makes any single view
+  //     bookmarkable and shareable on its own.
   // ---- saved views: the durable form is a link -------------------------------
   // Looker's custom-visualization iframe is sandboxed without allow-same-origin, so storage of
   // every kind throws and the list below survives only as long as the tile is mounted. The one
@@ -206,26 +218,31 @@
     } catch(e){ return decodeURIComponent(escape(raw)); }
   }
 
-  var VIEWS_KEY = "nsia_radial_bubble.savedViews.v1";
-  var memViews = null;                       // non-null once localStorage has failed us once
-  function viewsAvailable(){ return memViews === null; }
-  function viewsRead(){
-    if (memViews) return memViews.slice();
-    try {
-      var list = JSON.parse(window.localStorage.getItem(VIEWS_KEY) || "[]");
-      if (!Array.isArray(list)) return [];
-      // Anything hand-edited, half-written or left by an older key shape is dropped rather than
-      // handed to _applyView, which would then read `view` off undefined.
-      return list.filter(function(f){ return f && typeof f.name === "string" && f.name && f.view && typeof f.view === "object"; });
-    } catch(e){ memViews = []; return []; }
+  // ---- saved views: the list lives with the tile ------------------------------
+  // Views are curated, not personal: whoever can edit the dashboard prepares them, and everyone
+  // else picks from the list. So the list belongs to the TILE, not to a viewer — it is kept in
+  // the visualization's own config and travels with the dashboard for every user who opens it.
+  //
+  // Browser storage is not an option regardless: Looker's viz iframe is sandboxed without
+  // allow-same-origin, which makes localStorage, sessionStorage, cookies and IndexedDB all throw
+  // on access. The config is the only writable store the sandbox can reach, via updateConfig.
+  //
+  // Stored as [{n: name, v: <base64url view>}] — the same encoding the URL uses, so one codec
+  // serves both and the config field stays small enough to read in the settings panel.
+  var VIEWS_CFG = "saved_views";
+  function parseViews(raw){
+    if (!raw) return [];
+    var list;
+    try { list = JSON.parse(raw); } catch(e){ return []; }
+    if (!Array.isArray(list)) return [];
+    return list.map(function(e){
+      if (!e || typeof e.n !== "string" || !e.n) return null;
+      var view = decodeView(e.v);
+      return view ? { name: e.n, view: view } : null;
+    }).filter(Boolean);
   }
-  function viewsWrite(list){
-    if (viewsAvailable()) {
-      try { window.localStorage.setItem(VIEWS_KEY, JSON.stringify(list)); return true; }
-      catch(e){ memViews = []; }             // quota, private mode, or a same-origin-less sandbox
-    }
-    memViews = list.slice();
-    return false;                            // false = this session only; surfaced in the dropdown
+  function serializeViews(list){
+    return JSON.stringify(list.map(function(f){ return { n: f.name, v: encodeView(f.view) }; }));
   }
 
   var STYLES = `
@@ -235,6 +252,7 @@
     --pos:#1f9d57; --pos-soft:#e6f7ee; --neg:#d1442c; --neg-soft:#fdecea;
     font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     color:var(--ink); background:var(--panel); height:100%; display:flex; flex-direction:column;
+    position:relative;   /* anchors the render veil */
   }
   .nx-wrap *{box-sizing:border-box}
   .nx-toolbar{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); flex:0 0 auto}
@@ -344,6 +362,17 @@
   .nx-savedok{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft);
     font-size:11px; color:var(--pos); line-height:1.45}
   .nx-savedwarn b{color:inherit}
+  /* An inline action inside a footnote, so it reads as part of the sentence rather than as a
+     second control competing with the list above it. */
+  .nx-savedlink{border:none; background:none; padding:0; font-size:inherit; font-weight:700;
+    color:var(--accent); text-decoration:underline; cursor:pointer; font-family:inherit}
+  .nx-savedexport{padding:8px 10px; margin-top:4px; border-top:1px solid var(--line-soft)}
+  .nx-savedexporthd{font-size:11px; color:var(--muted); line-height:1.45; margin-bottom:6px}
+  .nx-savedexporthd b{color:var(--ink)}
+  .nx-savedexporttx{width:100%; box-sizing:border-box; font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;
+    color:var(--ink); background:var(--ground); border:1px solid var(--line); border-radius:8px;
+    padding:6px 8px; resize:vertical; margin-bottom:6px}
+  .nx-savedexporttx:focus{outline:2px solid var(--accent); outline-offset:1px}
 
   .nx-stage{display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden}
   /* Chart keeps an EXPLICIT pixel height (a % / flex-grow height collapses on Looker's first
@@ -568,6 +597,41 @@
   .cx-chip{display:inline-block; min-width:42px; text-align:center; font-weight:800; font-size:12px; border-radius:20px; padding:2px 8px; font-variant-numeric:tabular-nums}
   .cx-chip.cx-p{background:var(--pos-soft); color:var(--pos)} .cx-chip.cx-n{background:var(--neg-soft); color:var(--neg)} .cx-chip.cx-z{background:var(--line-soft); color:var(--muted)}
   .cx-footnote{font-size:11px; color:var(--muted); margin-top:11px; line-height:1.5}
+  /* ---- render veil ----
+     _render turns the rows into the whole chart in one synchronous pass, so on a
+     full population the tile freezes for seconds with nothing on it to say so.
+     This covers that gap. It fades in only after 180ms, because a fast render
+     should not flash a loader, and the bar is timed from the PREVIOUS render
+     rather than from progress the render cannot report — so it fills towards 92%
+     and waits there rather than ever claiming to be done. */
+  .nx-veil{position:absolute; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+    background:rgba(245,247,250,0.9); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
+    opacity:0; animation:nx-veil-in .25s ease .18s forwards}
+  .nx-veil.out{animation:nx-veil-out .2s ease forwards}
+  @keyframes nx-veil-in{from{opacity:0} to{opacity:1}}
+  @keyframes nx-veil-out{from{opacity:1} to{opacity:0}}
+  /* Pinned with min(): dead-centre is right on a normal tile, but this one can be
+     taller than the browser window, and a card centred in a 1200px tile sits below
+     the fold — i.e. invisible exactly when the wait is longest. */
+  .nx-veil-card{position:absolute; left:50%; top:min(50%,300px); transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center; padding:24px 30px 20px; background:var(--panel);
+    border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 30px rgba(20,28,38,.14); min-width:258px; max-width:calc(100% - 32px)}
+  .nx-veil-art{display:block; margin-bottom:12px}
+  .nx-veil-art .w{fill:none; stroke:var(--accent); stroke-width:1.6; transform-origin:27px 27px;
+    opacity:0; animation:nx-veil-ring 1.9s ease-out infinite}
+  .nx-veil-art .w2{animation-delay:.63s}
+  .nx-veil-art .w3{animation-delay:1.26s}
+  .nx-veil-art .core{fill:var(--accent); transform-origin:27px 27px; animation:nx-veil-core 1.9s ease-in-out infinite}
+  @keyframes nx-veil-ring{from{transform:scale(.6); opacity:.85} to{transform:scale(3); opacity:0}}
+  @keyframes nx-veil-core{0%,100%{transform:scale(.86)} 50%{transform:scale(1)}}
+  .nx-veil-msg{font-size:13.5px; font-weight:650; color:var(--ink); text-align:center; transition:opacity .22s ease}
+  .nx-veil-sub{font-size:11px; color:var(--muted); margin-top:4px; text-align:center}
+  .nx-veil-bar{position:relative; width:192px; height:3px; margin-top:15px; border-radius:2px; background:var(--line); overflow:hidden}
+  .nx-veil-bar i{position:absolute; top:0; bottom:0; left:0; width:0; border-radius:2px; background:var(--accent)}
+  /* No previous duration to estimate from (first render of the tile): shuttle
+     rather than fill, because a fill would be inventing a number. */
+  .nx-veil-bar.idle i{width:38%; animation:nx-veil-shuttle 1.25s ease-in-out infinite}
+  @keyframes nx-veil-shuttle{from{left:-40%} to{left:100%}}
   @media (max-width:1024px){ .nx-panel{grid-template-columns:repeat(2,minmax(0,1fr))} }
   @media (max-width:760px){
     .nx-chartwrap{height:400px}
@@ -663,7 +727,14 @@
       role_filter_field: { type: "string", label: "Target-role filter field (blank = the tile's own)",
                            default: "", section: "Saved views", order: 2 },
       restore_filters: { type: "boolean", label: "Views restore the dashboard filters",
-                         default: true, section: "Saved views", order: 3 }
+                         default: true, section: "Saved views", order: 3 },
+      // The curated list itself. Registered rather than written as a loose config key, because
+      // Looker only reliably persists keys it knows about — and an unregistered one is reported
+      // to vanish on reload, which for the one field that IS the feature is not a risk worth
+      // taking. It shows in the settings panel as a JSON blob; that is a fair price, and it
+      // doubles as the way to copy a curated set from one tile to another.
+      saved_views: { type: "string", label: "Saved views (managed by the tile — edit with care)",
+                     default: "", section: "Saved views", order: 4 }
     },
 
     // ---- one-time shell -----------------------------------------------------
@@ -726,7 +797,14 @@
         // savedOpen / savedNaming / savedName are pure UI: the dropdown, and whether it is
         // currently showing the name box instead of the save action.
         savedViews: [], activeView: null, savedOpen: false, savedNaming: false, savedName: "",
-        savedPersisted: true,
+        // Views added or removed in THIS session that the tile's config has not echoed back
+        // yet. A viewer without rights to save the dashboard never gets that echo, so without
+        // these their save would appear to revert the instant updateConfig round-trips.
+        localViews: {}, removedViews: {}, savedPersisted: true, showExport: false,
+        // configBlob is the last saved_views value that genuinely came from Looker rather than
+        // from this tile's own updateConfig; lastWritten is what the tile wrote, so the two can
+        // be told apart.
+        configBlob: "", lastWritten: null,
         filters: null,             // dashboard filters behind the query; set from each update
         // Link-backed views. viewCode is what arrived in the URL this update; appliedCode is
         // the last one acted on, so a bookmarked view lands once instead of fighting every
@@ -739,8 +817,7 @@
       };
       var self = this, st = this.state, $ = this.$;
 
-      st.savedViews = viewsRead().sort(function (a, b) { return a.name.localeCompare(b.name); });
-      st.savedPersisted = viewsAvailable();
+      // The list arrives with the config, so it is read in updateAsync rather than here.
 
       $.slider.addEventListener("input", function () {
         st.maxRoleFit = Number($.slider.value); $.sliderVal.textContent = $.slider.value; self._draw();
@@ -817,6 +894,12 @@
         if (t.closest(".nx-savednew")) { st.savedNaming = true; st.savedName = ""; self._renderSavedViews(); return; }
         if (t.closest(".nx-savedsave")) { self._saveCurrentView(st.savedName); return; }
         if (t.closest(".nx-savedcancel")) { st.savedNaming = false; st.savedName = ""; self._renderSavedViews(); return; }
+        if (t.closest(".nx-savedexportbtn")) { st.showExport = true; self._renderSavedViews(); return; }
+        if (t.closest(".nx-savedexportdone")) { st.showExport = false; self._renderSavedViews(); return; }
+        if (t.closest(".nx-savedcopy")) { self._copyExport(); return; }
+        // The textarea must stay clickable for a manual select without the click falling through
+        // to a row underneath it.
+        if (t.closest(".nx-savedexport")) return;
         // Before the row, which encloses it — clicking delete must not also apply the view.
         var del = t.closest(".nx-saveddel");
         if (del) { self._deleteView(del.getAttribute("data-name")); return; }
@@ -952,7 +1035,142 @@
     },
 
     // ---- data in ------------------------------------------------------------
+    // Looker hands the rows over here and _render builds the entire chart from
+    // them in one synchronous pass. Painting the veil therefore needs a frame of
+    // its own: a requestAnimationFrame callback still runs BEFORE the frame it
+    // belongs to is painted, so starting the render inside one would block the
+    // very paint the veil exists to produce. Hence rAF -> timeout — the work
+    // begins only once the veil is genuinely on screen.
     updateAsync: function (data, element, config, queryResponse, details, done) {
+      var self = this;
+      this._veilShow(data && data.length ? data.length.toLocaleString() + " assessment rows" : "");
+
+      // A resize or a filter change can land on top of a render that has not
+      // started yet. Drop the older one, but still call its `done`: Looker waits
+      // on every updateAsync it issued.
+      if (this._queued) {
+        cancelAnimationFrame(this._queued.raf);
+        clearTimeout(this._queued.timer);
+        try { if (this._queued.done) this._queued.done(); } catch (e) { /* Looker no longer cares */ }
+      }
+      var t0 = performance.now();
+      var q = (this._queued = { done: done });
+      q.raf = requestAnimationFrame(function () {
+        q.timer = setTimeout(function () {
+          self._queued = null;
+          try {
+            self._render(data, element, config, queryResponse, details, done);
+          } catch (e) {
+            // Without this the veil would sit over a half-drawn tile and the
+            // tile would never report itself finished.
+            console.error("[radial bubble] render failed:", e);
+            if (done) done();
+          } finally {
+            self._veilHide();
+            // How long the BUILD took, as opposed to the query that preceded it.
+            // The two waits look identical from the outside and have completely
+            // different fixes, so the tile says which one it was.
+            console.info("[radial bubble] built " + ((data && data.length) || 0) +
+                         " rows in " + Math.round(performance.now() - t0) + "ms");
+          }
+        }, 0);
+      });
+    },
+
+    // ---- render veil ---------------------------------------------------------
+    // Everything here is deliberately cheap: it runs on the frame before the
+    // render seizes the main thread, so anything costly would only delay the
+    // paint it is here to produce.
+    _veilShow: function (subtitle) {
+      var host = this.$ && this.$.wrap;
+      if (!host) return;
+      var self = this, veil = this._veil;
+
+      if (!veil) {
+        veil = this._veil = document.createElement("div");
+        veil.className = "nx-veil";
+        // Expanding rings rather than a generic spinner: it echoes the chart the
+        // tile is building, which says WHICH tile is working on a busy dashboard.
+        veil.innerHTML =
+          '<div class="nx-veil-card">' +
+            '<svg class="nx-veil-art" width="54" height="54" viewBox="0 0 54 54">' +
+              '<circle class="w w1" cx="27" cy="27" r="8"></circle>' +
+              '<circle class="w w2" cx="27" cy="27" r="8"></circle>' +
+              '<circle class="w w3" cx="27" cy="27" r="8"></circle>' +
+              '<circle class="core" cx="27" cy="27" r="5.5"></circle>' +
+            '</svg>' +
+            '<div class="nx-veil-msg"></div>' +
+            '<div class="nx-veil-sub"></div>' +
+            '<div class="nx-veil-bar"><i></i></div>' +
+          '</div>';
+      }
+      veil.classList.remove("out");
+      // Re-adding restarts the fade-in, which is what makes the 180ms grace
+      // period apply to every render and not just the first.
+      if (veil.parentNode) veil.parentNode.removeChild(veil);
+      host.appendChild(veil);
+
+      var msgEl = veil.querySelector(".nx-veil-msg");
+      var subEl = veil.querySelector(".nx-veil-sub");
+      msgEl.style.opacity = "1";
+      msgEl.textContent = VEIL_LINES[0];
+      subEl.textContent = subtitle || "";
+
+      var i = 0;
+      clearInterval(this._veilTick);
+      this._veilTick = setInterval(function () {
+        if (++i >= VEIL_LINES.length - 1) clearInterval(self._veilTick);
+        msgEl.style.opacity = "0";
+        setTimeout(function () { msgEl.textContent = VEIL_LINES[i]; msgEl.style.opacity = "1"; }, 220);
+      }, 1800);
+
+      // The bar runs on how long the last render of this tile actually took.
+      // There is no honest per-step progress to be had — the render is one
+      // uninterruptible block — so it never shows a number and never fills.
+      var bar = veil.querySelector(".nx-veil-bar"), fill = bar.querySelector("i");
+      if (this._veilEst > 400) {
+        bar.classList.remove("idle");
+        fill.style.transition = "none";
+        fill.style.width = "0%";
+        void fill.offsetWidth;            // commit the 0% before the long fill starts
+        fill.style.transition = "width " + Math.round(this._veilEst) + "ms linear";
+        fill.style.width = "92%";
+      } else {
+        bar.classList.add("idle");
+        fill.style.transition = "";
+        fill.style.width = "";
+      }
+      this._veilAt = performance.now();
+    },
+
+    _veilHide: function () {
+      clearInterval(this._veilTick);
+      this._veilTick = null;
+      var veil = this._veil;
+      if (!veil || !veil.parentNode) return;
+
+      var lasted = performance.now() - (this._veilAt || 0);
+      this._veilEst = lasted;             // what the next render estimates from
+      var pull = function () { if (veil.parentNode) veil.parentNode.removeChild(veil); };
+
+      // Under the fade-in delay nobody ever saw it, so take it straight out.
+      if (lasted < 180) { pull(); return; }
+
+      var bar = veil.querySelector(".nx-veil-bar"), fill = bar && bar.querySelector("i");
+      if (fill) {
+        bar.classList.remove("idle");
+        fill.style.transition = "width 150ms ease-out";
+        fill.style.width = "100%";
+      }
+      // A veil that appears and vanishes inside a few frames reads as a glitch,
+      // so once it is visible it stays for a beat before fading out.
+      setTimeout(function () {
+        veil.classList.add("out");
+        setTimeout(function () { pull(); veil.classList.remove("out"); }, 220);
+      }, Math.max(0, 520 - lasted));
+    },
+
+    _render: function (data, element, config, queryResponse, details, done) {
       this._config = Object.assign(
         { high_band: 66, medium_band: 33, color_high: "#2fbf71", color_medium: "#f5a623", color_low: "#e8503a",
           color_unscored: "#b6bfca",
@@ -987,6 +1205,20 @@
       this.state.personalInQuery = PERSONAL_KEYS.some(function (k) { return !!map[k]; });
 
       this.state.roleFilterApplied = roleFilterApplied(queryResponse);
+      // The curated list, straight off the tile's config, merged with anything this session has
+      // added or removed but not yet seen echoed back. Once the config carries a change, the
+      // local copy of it is dropped so the config stays the single source of truth.
+      // A tile's own updateConfig echoes straight back into the config it is handed next. That
+      // is NOT proof the dashboard stored anything — on builds where updateConfig does not
+      // persist (which is the norm), believing it would tell the user their second view was
+      // saved when only the first one, pasted in by hand, ever reached the dashboard. So a
+      // config identical to what this tile last wrote is treated as an echo and ignored; only a
+      // value that came from somewhere else — a real load, or a hand edit of the setting —
+      // updates what counts as persisted.
+      var rawCfg = this._config[VIEWS_CFG] || "";
+      if (rawCfg !== this.state.lastWritten) this.state.configBlob = rawCfg;
+      this._mergeViews(parseViews(this.state.configBlob));
+
       // What the dashboard filters are right now, so a saved view can be compared against them
       // — and, when one is applied, put back.
       this.state.filters = filterSummary(queryResponse);
@@ -1679,15 +1911,77 @@
 
     // Upsert by name (case-insensitively) into the in-session list, and write the same view to
     // the URL. The name is the session's handle on it; the URL is what actually survives.
+    // Reconcile the tile's config against what this session has done to the list. The config
+    // wins wherever it speaks, because it is what every other viewer of this dashboard sees;
+    // local entries only fill the gap between making a change and the config carrying it.
+    _mergeViews: function (fromConfig) {
+      var st = this.state, byKey = {};
+      fromConfig.forEach(function (f) {
+        if (st.removedViews[f.name]) return;            // deleted here, not yet carried over
+        byKey[f.name.toLowerCase()] = f;
+      });
+      Object.keys(st.localViews).forEach(function (n) {
+        var lv = st.localViews[n], k = n.toLowerCase(), cf = byKey[k];
+        // The local copy retires only once the config carries THIS version of it. Matching on
+        // the name alone would let a stale config entry overwrite an edit the user just made —
+        // "Update 'Beta'" would apply, then silently revert to the old Beta on the next render.
+        if (cf && cf.name === lv.name && encodeView(cf.view) === encodeView(lv.view)) {
+          delete st.localViews[n];
+        } else {
+          byKey[k] = lv;                                // ours is newer; it replaces, not duplicates
+        }
+      });
+      var list = Object.keys(byKey).map(function (k) { return byKey[k]; });
+      // A delete that the config has acted on needs no further suppressing.
+      Object.keys(st.removedViews).forEach(function (n) {
+        if (!fromConfig.some(function (f) { return f.name === n; })) delete st.removedViews[n];
+      });
+      list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+      st.savedViews = list;
+      // Everything this session changed is still only local => nothing has been persisted, which
+      // is what a viewer without rights to save the dashboard will see.
+      st.savedPersisted = !Object.keys(st.localViews).length && !Object.keys(st.removedViews).length;
+    },
+
+    // Write the list into the tile's own config. Looker persists that when the dashboard is
+    // saved, which is why this is an editor's action in practice — a viewer can still create a
+    // view and use it, it just goes when they leave.
+    _persistViews: function () {
+      var blob = serializeViews(this.state.savedViews);
+      this.state.lastWritten = blob;      // so the echo of this write is not mistaken for a save
+      try {
+        this.trigger("updateConfig", [(function (k, v) { var o = {}; o[k] = v; return o; })(
+          VIEWS_CFG, blob)]);
+        return true;
+      } catch (e) {
+        console.error("[radial bubble] could not write the saved-view list to the tile config", e);
+        return false;
+      }
+    },
+
     _saveCurrentView: function (raw) {
       var st = this.state, name = clean(raw).slice(0, 50);
       if (!name) return;
       var view = this._captureView();
       var list = st.savedViews.filter(function (f) { return f.name.toLowerCase() !== name.toLowerCase(); });
-      list.push({ name: name, savedAt: Date.now(), view: view });
+      list.push({ name: name, view: view });
       list.sort(function (a, b) { return a.name.localeCompare(b.name); });
       st.savedViews = list;
-      st.savedPersisted = viewsWrite(list);
+      // The list upserts case-insensitively, so the local copy has to as well: leaving a
+      // differently-cased key behind would have the merge resurrect it as a second entry.
+      Object.keys(st.localViews).forEach(function (k) {
+        if (k.toLowerCase() === name.toLowerCase()) delete st.localViews[k];
+      });
+      Object.keys(st.removedViews).forEach(function (k) {
+        if (k.toLowerCase() === name.toLowerCase()) delete st.removedViews[k];
+      });
+      st.localViews[name] = { name: name, view: view };
+      // Not stored until the config echoes it back — which _mergeViews decides on the next
+      // update. Assuming otherwise here would leave the footer claiming a view is shared on the
+      // Looker builds that accept updateConfig and quietly drop it, which is the case that
+      // actually needs warning about.
+      st.savedPersisted = false;
+      this._persistViews();
       st.activeView = name;
       st.savedOpen = false; st.savedNaming = false; st.savedName = "";
       st.linkWritten = st.viewStateInQuery ? this._writeViewCode(encodeView(view)) : false;
@@ -1700,7 +1994,10 @@
     _deleteView: function (name) {
       var st = this.state;
       st.savedViews = st.savedViews.filter(function (f) { return f.name !== name; });
-      st.savedPersisted = viewsWrite(st.savedViews);
+      delete st.localViews[name];
+      st.removedViews[name] = true;
+      st.savedPersisted = false;             // as above: unconfirmed until the config agrees
+      this._persistViews();
       if (st.activeView === name) st.activeView = null;
       this._renderSavedViews();
     },
@@ -1737,6 +2034,19 @@
       this._defaultWeak(); this._resetPool();
 
       this._renderTags(); this._renderSug(); this._renderSavedViews(); this._draw();
+    },
+
+    // Copy the config blob out of a sandboxed iframe. navigator.clipboard needs a permission
+    // this origin will never be granted, so it is execCommand or nothing — and when that is
+    // refused too, the text is left selected so the user is one Ctrl-C away regardless.
+    _copyExport: function () {
+      var tx = this.$.savedDrop.querySelector(".nx-savedexporttx");
+      if (!tx) return;
+      tx.focus(); tx.select(); tx.setSelectionRange(0, tx.value.length);
+      var done = false;
+      try { done = document.execCommand("copy"); } catch (e) { done = false; }
+      var btn = this.$.savedDrop.querySelector(".nx-savedcopy");
+      if (btn) btn.textContent = done ? "Copied" : "Press Ctrl-C";
     },
 
     _renderSavedViews: function () {
@@ -1792,19 +2102,46 @@
           }).join("")
         : '<div class="nx-savednote">No saved views yet.</div>';
 
-      // What actually keeps a view. The names above are a convenience for flipping between
-      // setups in one sitting; the dashboard URL is the thing that survives a reload, so that is
-      // what the footer talks about. Three states, because the fix differs in each.
+      // What actually keeps a view, and how to make that happen.
+      //
+      // The tile asks Looker to store the list with trigger("updateConfig"), which updates the
+      // running tile but is NOT reliably written back into a dashboard's saved vis_config —
+      // confirmed the hard way on a real instance, saving the dashboard from edit mode as an
+      // Admin. So the honest instruction is the one that always works: the list is also a plain
+      // registered option, and anything typed into that option through Looker's own settings
+      // panel persists exactly like any other viz setting. Hence "copy the setup, paste it in".
       var warn;
-      if (!st.viewStateInQuery) {
-        warn = '<div class="nx-savedwarn">Add the <b>View state (tile)</b> field to this tile to keep views. ' +
-               'Without it a view lasts only until the tile reloads.</div>';
+      if (st.showExport) {
+        warn = '<div class="nx-savedexport">' +
+                 '<div class="nx-savedexporthd">Paste this into the tile\'s <b>Saved views</b> setting ' +
+                 '(Edit → Visualization → Saved views), then save the dashboard.</div>' +
+                 '<textarea class="nx-savedexporttx" readonly rows="4">' + esc(serializeViews(st.savedViews)) + '</textarea>' +
+                 '<div class="nx-savedbtns">' +
+                   '<button type="button" class="nx-savedbtn primary nx-savedcopy">Copy</button>' +
+                   '<button type="button" class="nx-savedbtn nx-savedexportdone">Done</button>' +
+                 '</div>' +
+               '</div>';
+      } else if (!st.savedPersisted) {
+        // A pending delete and a pending add both need the same fix — paste the setup back into
+        // the setting — but they fail in opposite directions, so saying "these views vanish"
+        // over a deletion would read as nonsense to whoever just removed one.
+        var added = Object.keys(st.localViews).length, gone = Object.keys(st.removedViews).length;
+        var what = !added ? 'Deleted here only — removed views come back on refresh.'
+                 : !gone  ? 'Not stored yet — these views vanish on refresh.'
+                          : 'Unsaved changes — the list reverts on refresh.';
+        warn = '<div class="nx-savedwarn">' + what +
+               ' <button type="button" class="nx-savedlink nx-savedexportbtn">Copy setup to save the list</button></div>';
       } else if (st.linkWritten) {
-        warn = '<div class="nx-savedok">Written to the dashboard URL — bookmark this page, or copy its link, ' +
-               'to reopen this exact view.</div>';
+        warn = '<div class="nx-savedok">Written to the dashboard URL — bookmark the page to reopen ' +
+               'this exact view.</div>';
       } else {
-        warn = '<div class="nx-savednote-f">Names here last for this session. Saving also writes the view into ' +
-               'the dashboard URL — bookmark that to keep it.</div>';
+        warn = '<div class="nx-savednote-f">Views are shared with everyone who opens this dashboard. ' +
+               '<button type="button" class="nx-savedlink nx-savedexportbtn">Copy setup</button></div>';
+      }
+      // Separate from the above: the link half of a view needs the echo column in the query.
+      if (!st.viewStateInQuery) {
+        warn += '<div class="nx-savednote-f">Add the <b>View state (tile)</b> field to this tile to make ' +
+                'views bookmarkable as links.</div>';
       }
 
       // The applied view was saved under different dashboard filters. A tile can read those but
