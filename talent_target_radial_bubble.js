@@ -608,6 +608,9 @@
     background:rgba(245,247,250,0.9); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
     opacity:0; animation:nx-veil-in .25s ease .18s forwards}
   .nx-veil.out{animation:nx-veil-out .2s ease forwards}
+  /* Raised from create(), where we KNOW a slow query is coming: no point holding
+     back 180ms for a wait that is always worth announcing. */
+  .nx-veil.now{animation:none; opacity:1}
   @keyframes nx-veil-in{from{opacity:0} to{opacity:1}}
   @keyframes nx-veil-out{from{opacity:1} to{opacity:0}}
   /* Pinned with min(): dead-centre is right on a normal tile, but this one can be
@@ -1006,6 +1009,16 @@
 
       this._renderSavedViews();   // disabled + "None applied" until the first rows land
       this._sizeChart();
+
+      // The wait people actually feel is the QUERY, not the build — the build is
+      // ~30ms for a few hundred rows, far under the veil's own fade-in grace, so a
+      // veil raised in updateAsync is mathematically incapable of ever being seen.
+      // create() runs BEFORE Looker issues the query and is the only hook that does,
+      // so the veil goes up here and comes down when the first rows have been drawn.
+      this._veilShow("Running the query…", true);
+      // A query that ERRORS reaches addError, never updateAsync, and nothing else
+      // would ever take this down.
+      this._veilFailsafe = setTimeout(function () { self._veilHide(); }, 45000);
       if (typeof ResizeObserver !== "undefined") {
         this._ro = new ResizeObserver(function () { self._sizeChart(); });
         this._ro.observe(element);
@@ -1048,43 +1061,67 @@
       // A resize or a filter change can land on top of a render that has not
       // started yet. Drop the older one, but still call its `done`: Looker waits
       // on every updateAsync it issued.
-      if (this._queued) {
-        cancelAnimationFrame(this._queued.raf);
-        clearTimeout(this._queued.timer);
+      if (this._queued && !this._queued.started) {
+        this._queued.cancel();
         try { if (this._queued.done) this._queued.done(); } catch (e) { /* Looker no longer cares */ }
       }
+
       var t0 = performance.now();
-      var q = (this._queued = { done: done });
-      q.raf = requestAnimationFrame(function () {
-        q.timer = setTimeout(function () {
-          self._queued = null;
-          try {
-            self._render(data, element, config, queryResponse, details, done);
-          } catch (e) {
-            // Without this the veil would sit over a half-drawn tile and the
-            // tile would never report itself finished.
-            console.error("[radial bubble] render failed:", e);
-            if (done) done();
-          } finally {
-            self._veilHide();
-            // How long the BUILD took, as opposed to the query that preceded it.
-            // The two waits look identical from the outside and have completely
-            // different fixes, so the tile says which one it was.
-            console.info("[radial bubble] built " + ((data && data.length) || 0) +
-                         " rows in " + Math.round(performance.now() - t0) + "ms");
-          }
-        }, 0);
-      });
+      var q = this._queued = { done: done, started: false };
+      q.cancel = function () {
+        cancelAnimationFrame(q.raf); clearTimeout(q.timer); clearTimeout(q.fallback);
+      };
+      var go = function () {
+        if (q.started) return;            // whichever timer got here first wins
+        q.started = true;
+        q.cancel();
+        self._queued = null;
+        try {
+          self._render(data, element, config, queryResponse, details, done);
+        } catch (e) {
+          // Without this the veil would sit over a half-drawn tile and the
+          // tile would never report itself finished.
+          console.error("[radial bubble] render failed:", e);
+          if (done) done();
+        } finally {
+          self._veilHide();
+          // How long the BUILD took, as opposed to the query that preceded it.
+          // The two waits look identical from the outside and have completely
+          // different fixes, so the tile says which one it was.
+          console.info("[radial bubble] built " + ((data && data.length) || 0) +
+                       " rows in " + Math.round(performance.now() - t0) + "ms");
+        }
+      };
+
+      // Give the veil a frame to paint before the build seizes the thread: an rAF
+      // callback runs BEFORE the frame it belongs to is painted, so the work has to
+      // start from the frame after that.
+      q.raf = requestAnimationFrame(function () { q.timer = setTimeout(go, 0); });
+      // rAF NEVER fires while the document is hidden — a background browser tab, a
+      // tile Looker has not scrolled into view, or the headless renderer behind a
+      // scheduled PDF. Relying on it alone means the chart is never built at all and
+      // the tile sits on the veil forever. There is no paint to wait for when hidden,
+      // so this fallback just gets on with it.
+      q.fallback = setTimeout(go, 60);
     },
 
     // ---- render veil ---------------------------------------------------------
     // Everything here is deliberately cheap: it runs on the frame before the
     // render seizes the main thread, so anything costly would only delay the
     // paint it is here to produce.
-    _veilShow: function (subtitle) {
+    _veilShow: function (subtitle, immediate) {
       var host = this.$ && this.$.wrap;
       if (!host) return;
       var self = this, veil = this._veil;
+
+      // Already up and not fading out: leave the animation and the message rotation
+      // running and just refresh the sub-line. This is what lets the veil raised in
+      // create() carry straight through into the first render without a flicker.
+      if (veil && veil.parentNode === host && !veil.classList.contains("out")) {
+        var cur = veil.querySelector(".nx-veil-sub");
+        if (cur && subtitle) cur.textContent = subtitle;
+        return;
+      }
 
       if (!veil) {
         veil = this._veil = document.createElement("div");
@@ -1105,6 +1142,7 @@
           '</div>';
       }
       veil.classList.remove("out");
+      veil.classList.toggle("now", !!immediate);
       // Re-adding restarts the fade-in, which is what makes the 180ms grace
       // period apply to every render and not just the first.
       if (veil.parentNode) veil.parentNode.removeChild(veil);
@@ -1146,6 +1184,8 @@
     _veilHide: function () {
       clearInterval(this._veilTick);
       this._veilTick = null;
+      clearTimeout(this._veilFailsafe);
+      this._veilFailsafe = null;
       var veil = this._veil;
       if (!veil || !veil.parentNode) return;
 
