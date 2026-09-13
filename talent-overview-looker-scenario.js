@@ -1,5 +1,18 @@
 (function () {
 
+  // ── Loading copy ──────────────────────────────────────────────────────────
+  // Shown in order, one every 1.8s, and it stops on the last line rather than
+  // looping: a message that comes back round tells the user the tile is stuck.
+  const VEIL_LINES = [
+    'Working our magic…',
+    'Untangling the reporting lines…',
+    'Counting heads (twice)…',
+    'Lining up the boxes…',
+    'Checking who reports to whom…',
+    'Consulting the succession plan…',
+    'Almost there — polishing the pixels…'
+  ];
+
   function init() {
     looker.plugins.visualizations.add({
 
@@ -332,6 +345,36 @@
              hovering reads as "there is no undo". Scenario rows keep the hover-only ✕. */
           .to-casc-row.undoable .to-casc-undo { opacity:0.5; }
           .to-casc-seq { flex-shrink:0; width:13px; text-align:right; font-size:10px; color:#bbb; font-variant-numeric:tabular-nums; }
+          /* ── Render veil ─────────────────────────────────────────────────
+             The render below clears the chart and then rebuilds the whole tree
+             in one synchronous pass, so on a large org the tile sits as a blank
+             rectangle for several seconds with nothing to say it is working.
+             The veil covers that gap. It fades in only after 180ms — a fast
+             render should not flash a loader at anyone — and the bar is timed
+             from the PREVIOUS render rather than from progress the render has
+             no way to report, so it fills towards 92% and waits there. */
+          .to-veil { position:absolute; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; background:rgba(247,249,251,0.9); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); opacity:0; animation:to-veil-in 0.25s ease 0.18s forwards; }
+          .to-veil.out { animation:to-veil-out 0.2s ease forwards; }
+          @keyframes to-veil-in  { from { opacity:0; } to { opacity:1; } }
+          @keyframes to-veil-out { from { opacity:1; } to { opacity:0; } }
+          .to-veil-card { display:flex; flex-direction:column; align-items:center; padding:22px 28px 18px; background:#fff; border-radius:10px; box-shadow:0 6px 28px rgba(20,28,38,0.17); min-width:250px; max-width:calc(100% - 32px); }
+          .to-veil-art { display:block; margin-bottom:11px; }
+          .to-veil-art line { stroke:#d9e0e7; stroke-width:1.5; }
+          .to-veil-art circle { animation:to-veil-beat 1.5s ease-in-out infinite; }
+          .to-veil-art .r  { fill:#2c3e50; }
+          .to-veil-art .c  { fill:#3498db; }
+          .to-veil-art .c1 { animation-delay:0.16s; }
+          .to-veil-art .c2 { animation-delay:0.32s; }
+          .to-veil-art .c3 { animation-delay:0.48s; }
+          @keyframes to-veil-beat { 0%, 100% { opacity:0.3; } 45% { opacity:1; } }
+          .to-veil-msg { font-size:13px; font-weight:600; color:#222; text-align:center; transition:opacity 0.22s ease; }
+          .to-veil-sub { font-size:11px; color:#98a3ad; margin-top:3px; text-align:center; }
+          .to-veil-bar { position:relative; width:186px; height:3px; margin-top:14px; border-radius:2px; background:#e7ecf1; overflow:hidden; }
+          .to-veil-bar i { position:absolute; top:0; bottom:0; left:0; width:0; border-radius:2px; background:#3498db; }
+          /* First render of a tile has no duration to estimate from, so the bar
+             shuttles instead of filling — a fill would be inventing a number. */
+          .to-veil-bar.idle i { width:38%; animation:to-veil-shuttle 1.25s ease-in-out infinite; }
+          @keyframes to-veil-shuttle { from { left:-40%; } to { left:100%; } }
         `;
         element.appendChild(style);
 
@@ -487,6 +530,7 @@
 
         this._toolbar      = toggle;   // the scale bar is positioned under it, whatever its height
         this._chart        = chart;
+        this._element      = element;   // host for the render veil
         this._tooltip      = tooltip;
         this._action       = action;
         this._empcard      = empcard;
@@ -530,7 +574,7 @@
         });
       },
 
-      updateAsync(data, element, config, queryResponse, details, done) {
+      _render(data, element, config, queryResponse, details, done) {
         this._chart.querySelectorAll('svg').forEach(el => el.remove());
         this._fitRerender = null;   // drop the closure bound to the previous render's tree
         // Identity for THIS render. Deferred work (the auto-optimizer runs a tick after
@@ -3256,6 +3300,142 @@
         if (newInput.value) applySearch(newInput.value);
 
         done();
+      },
+
+      // Looker hands the rows over here and _render turns them into the chart in
+      // one long synchronous pass. Painting the veil therefore has to happen in a
+      // frame of its own: a requestAnimationFrame callback still runs BEFORE the
+      // frame it belongs to is painted, so starting the render inside one would
+      // block the very paint the veil exists to produce. Hence rAF -> timeout:
+      // the work begins only once the veil is genuinely on screen.
+      updateAsync(data, element, config, queryResponse, details, done) {
+        this._element = element;
+        this._veilShow(data && data.length ? data.length.toLocaleString() + ' roles' : '');
+
+        // A resize or cross-filter can land on top of a render that has not
+        // started yet. Drop the older one — but still call its `done`, because
+        // Looker waits on every updateAsync it issued.
+        if (this._queued) {
+          cancelAnimationFrame(this._queued.raf);
+          clearTimeout(this._queued.timer);
+          try { this._queued.done(); } catch (e) { /* Looker no longer cares */ }
+        }
+        const q = (this._queued = { done });
+        q.raf = requestAnimationFrame(() => {
+          q.timer = setTimeout(() => {
+            this._queued = null;
+            try {
+              this._render(data, element, config, queryResponse, details, done);
+            } catch (e) {
+              // Without this the veil would stay up over a half-drawn tile and
+              // the tile would never report itself finished.
+              console.error('[talent-org-chart] render failed:', e);
+              done();
+            } finally {
+              this._veilHide();
+            }
+          }, 0);
+        });
+      },
+
+      // ── Render veil ──────────────────────────────────────────────────────
+      // Everything in here is deliberately cheap: it runs on the frame before
+      // the render seizes the main thread, and anything costly would just delay
+      // the paint it is here to produce.
+      _veilShow(subtitle) {
+        const host = this._element;
+        if (!host) return;
+
+        let veil = this._veil;
+        if (!veil) {
+          veil = this._veil = document.createElement('div');
+          veil.className = 'to-veil';
+          // A miniature org chart rather than a generic spinner: it says which
+          // tile is working, which matters on a dashboard of several.
+          veil.innerHTML = `
+            <div class="to-veil-card">
+              <svg class="to-veil-art" width="60" height="36" viewBox="0 0 60 36">
+                <line x1="30" y1="12" x2="30" y2="17"></line>
+                <line x1="10" y1="17" x2="50" y2="17"></line>
+                <line x1="10" y1="17" x2="10" y2="23"></line>
+                <line x1="30" y1="17" x2="30" y2="23"></line>
+                <line x1="50" y1="17" x2="50" y2="23"></line>
+                <circle class="r" cx="30" cy="7" r="5"></circle>
+                <circle class="c c1" cx="10" cy="28" r="4.2"></circle>
+                <circle class="c c2" cx="30" cy="28" r="4.2"></circle>
+                <circle class="c c3" cx="50" cy="28" r="4.2"></circle>
+              </svg>
+              <div class="to-veil-msg"></div>
+              <div class="to-veil-sub"></div>
+              <div class="to-veil-bar"><i></i></div>
+            </div>`;
+        }
+        veil.classList.remove('out');
+        // Re-adding restarts the fade-in animation, which is what makes the
+        // 180ms grace period apply to every render rather than only the first.
+        if (veil.parentNode) veil.parentNode.removeChild(veil);
+        host.appendChild(veil);
+
+        const msgEl = veil.querySelector('.to-veil-msg');
+        const subEl = veil.querySelector('.to-veil-sub');
+        msgEl.style.opacity = '1';
+        msgEl.textContent = VEIL_LINES[0];
+        subEl.textContent = subtitle || '';
+
+        let i = 0;
+        clearInterval(this._veilTick);
+        this._veilTick = setInterval(() => {
+          if (++i >= VEIL_LINES.length - 1) clearInterval(this._veilTick);
+          msgEl.style.opacity = '0';
+          setTimeout(() => { msgEl.textContent = VEIL_LINES[i]; msgEl.style.opacity = '1'; }, 220);
+        }, 1800);
+
+        // The bar is driven by how long the last render of this tile actually
+        // took. There is no honest per-step progress to report — the render is
+        // one uninterruptible block — so it never claims to be finished.
+        const bar  = veil.querySelector('.to-veil-bar');
+        const fill = bar.querySelector('i');
+        const est  = this._veilEst;
+        if (est > 400) {
+          bar.classList.remove('idle');
+          fill.style.transition = 'none';
+          fill.style.width = '0%';
+          void fill.offsetWidth;          // commit the 0% before the long fill starts
+          fill.style.transition = 'width ' + Math.round(est) + 'ms linear';
+          fill.style.width = '92%';
+        } else {
+          bar.classList.add('idle');
+          fill.style.transition = '';
+          fill.style.width = '';
+        }
+        this._veilAt = performance.now();
+      },
+
+      _veilHide() {
+        clearInterval(this._veilTick);
+        this._veilTick = null;
+        const veil = this._veil;
+        if (!veil || !veil.parentNode) return;
+
+        const lasted = performance.now() - (this._veilAt || 0);
+        this._veilEst = lasted;           // what the next render estimates from
+        const pull = () => { if (veil.parentNode) veil.parentNode.removeChild(veil); };
+
+        // Under the fade-in delay nobody ever saw it, so take it straight out.
+        if (lasted < 180) { pull(); return; }
+
+        const fill = veil.querySelector('.to-veil-bar i');
+        if (fill) {
+          veil.querySelector('.to-veil-bar').classList.remove('idle');
+          fill.style.transition = 'width 150ms ease-out';
+          fill.style.width = '100%';
+        }
+        // A veil that appears and vanishes within a few frames reads as a
+        // glitch, so once visible it stays for a beat before fading.
+        setTimeout(() => {
+          veil.classList.add('out');
+          setTimeout(() => { pull(); veil.classList.remove('out'); }, 220);
+        }, Math.max(0, 520 - lasted));
       },
 
       _showTooltip(event, d, OHI_COLORS, BENCH_RISK_COLORS) {
